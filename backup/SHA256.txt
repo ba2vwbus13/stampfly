@@ -1,0 +1,1 @@
+4c36dd1f6d8ef5301c89bb7ef3990620b783304e83cfcd749bdf7753cc4190e5  backup/stampfly_factory_8MB.bin

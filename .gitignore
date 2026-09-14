@@ -1,0 +1,11 @@
+# 工場ファームのバックアップ（機体固有データを含む）
+backup/*.bin
+
+# PlatformIO
+.pio/
+.vscode/
+
+# Python / macOS
+__pycache__/
+*.csv
+.DS_Store
