@@ -198,8 +198,8 @@ def main():
     # 安全
     ap.add_argument("--fence-xy", type=float, default=0.8, help="この範囲を出たら停止 [m]")
     ap.add_argument("--fence-z", type=float, default=1.2, help="この高さを超えたら停止 [m]")
-    ap.add_argument("--lost-grace", type=float, default=1.0, help="見失ってから送信を止めるまで [s]")
-    ap.add_argument("--neutral-after", type=float, default=0.2,
+    ap.add_argument("--lost-grace", type=float, default=0.5, help="見失ってから送信を止めるまで [s]")
+    ap.add_argument("--neutral-after", type=float, default=0.15,
                     help="見失ってから指令を中立にするまで [s]")
     ap.add_argument("--settle", type=float, default=2.0,
                     help="離陸してから位置制御を始めるまで [s]（機体が自動で浮くのを邪魔しない）")
@@ -312,7 +312,7 @@ def main():
                     diff = wrap_deg(head - head_est)
                     if abs(diff) < args.heading_gate:
                         # 離陸前は速く、飛行中はゆっくり合わせる
-                        head_est += (0.3 if not flying else 0.02) * diff
+                        head_est += (0.3 if not flying else 0.10) * diff
 
             # ---- 位置の更新（見失ったときは前の値を保つ） ----
             if seen:
