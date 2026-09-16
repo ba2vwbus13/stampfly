@@ -7,7 +7,8 @@
   3. 基準マーカーと機体の両方がカメラに写ることを確認する
 
 使い方:
-    python3 track_world.py --calibrate          # 座標系を決めて保存（最初に1回）
+    python3 track_world.py --calibrate          # 座標系を決めて保存し、そのまま追跡に移る
+    python3 track_world.py --calib-only         # 座標系を決めて保存したら終了
     python3 track_world.py                      # 保存した座標系で追跡
     python3 track_world.py --csv flight.csv     # ログも保存
 
@@ -97,6 +98,7 @@ def main():
     ap.add_argument("--calib", type=pathlib.Path, default=DEFAULT_CALIB)
     ap.add_argument("--calibrate", action="store_true", help="座標系を決め直す")
     ap.add_argument("--calib-frames", type=int, default=60)
+    ap.add_argument("--calib-only", action="store_true", help="座標系を保存したら追跡せずに終了する")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--res", choices=sorted(RESOLUTIONS), default="1080p")
     ap.add_argument("--exposure", type=float, default=6.0, help="手動露出 [ms]。0 で自動")
@@ -129,8 +131,10 @@ def main():
         if str(usb).endswith("HIGH"):
             print("警告: USB 2 で接続されている。USB 3 にすると遅延が大きく減る")
 
-        if args.calibrate or not args.calib.exists():
+        if args.calibrate or args.calib_only or not args.calib.exists():
             R_ref, t_ref = calibrate(device, detector, K, dist, args, width, height)
+            if args.calib_only:
+                return 0
         else:
             data = json.loads(args.calib.read_text())
             R_ref = np.array(data["R_ref"])
