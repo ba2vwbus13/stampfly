@@ -198,7 +198,14 @@ def main():
     # 安全
     ap.add_argument("--fence-xy", type=float, default=0.8, help="この範囲を出たら停止 [m]")
     ap.add_argument("--fence-z", type=float, default=1.2, help="この高さを超えたら停止 [m]")
-    ap.add_argument("--lost-grace", type=float, default=0.5, help="見失ってから停止するまで [s]")
+    ap.add_argument("--lost-grace", type=float, default=1.0, help="見失ってから送信を止めるまで [s]")
+    ap.add_argument("--neutral-after", type=float, default=0.2,
+                    help="見失ってから指令を中立にするまで [s]")
+    ap.add_argument("--settle", type=float, default=2.0,
+                    help="離陸してから位置制御を始めるまで [s]（機体が自動で浮くのを邪魔しない）")
+    ap.add_argument("--heading-gate", type=float, default=40.0,
+                    help="これ以上離れた向きの値は無視する [deg]")
+    ap.add_argument("--slew", type=float, default=0.05, help="指令の1フレームあたりの変化上限")
     ap.add_argument("--flip-roll", action="store_true", help="左右が逆に動くとき指定")
     ap.add_argument("--flip-pitch", action="store_true", help="前後が逆に動くとき指定")
     ap.add_argument("--gui", action="store_true", help="カメラ映像も表示する")
@@ -233,6 +240,9 @@ def main():
     stop_reason = ""
 
     pos_f = None
+    head_est = None        # 固定した向き。小刻みにしか更新しない
+    t_takeoff = None       # 離陸した時刻
+    ail_prev = ele_prev = 0.0
     vel = np.zeros(3)
     t_prev = None
     last_seen = time.time()
@@ -294,6 +304,16 @@ def main():
                 elif key == "\x03":
                     raise KeyboardInterrupt
 
+            # ---- 向きの推定（飛行中の乱れに引きずられないようにする） ----
+            if seen and head is not None:
+                if head_est is None:
+                    head_est = head
+                else:
+                    diff = wrap_deg(head - head_est)
+                    if abs(diff) < args.heading_gate:
+                        # 離陸前は速く、飛行中はゆっくり合わせる
+                        head_est += (0.3 if not flying else 0.02) * diff
+
             # ---- 位置の更新（見失ったときは前の値を保つ） ----
             if seen:
                 last_seen = time.time()
@@ -326,19 +346,28 @@ def main():
             # 飛んでいなくても計算はする（お試しモードで向きを確認できるように）。
             # 送信するのは離陸後だけ。
             ail = ele = thr = 0.0
-            if pos_f is not None:
+            lost_s = time.time() - last_seen
+            settling = flying and t_takeoff is not None and (time.time() - t_takeoff) < args.settle
+
+            if pos_f is not None and not settling and lost_s < args.neutral_after:
                 if not flying:
                     pid_x.reset()   # 飛んでいない間は積分を溜めない
                     pid_y.reset()
                 err = target - pos_f
                 dt = max(1.0 / args.fps, 1e-3)
-                # 世界座標での必要な傾き
                 ax = pid_x.update(err[0], vel[0], dt)   # +x 方向へ動きたい量 [deg]
                 ay = pid_y.update(err[1], vel[1], dt)
-                # 機体の向きに合わせて、機体から見た前後左右の指令に直す
-                ail, ele = to_command(ax, ay, head if head is not None else 0.0,
+                ail, ele = to_command(ax, ay, head_est if head_est is not None else 0.0,
                                       args.max_tilt, args.flip_roll, args.flip_pitch)
                 thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
+            elif settling:
+                thr = 0.0            # 自動離陸に任せる
+            # 見失っている間は中立（ail=ele=thr=0）のまま
+
+            # 急な変化を抑える
+            ail = float(np.clip(ail, ail_prev - args.slew, ail_prev + args.slew))
+            ele = float(np.clip(ele, ele_prev - args.slew, ele_prev + args.slew))
+            ail_prev, ele_prev = ail, ele
 
             # ---- 送信（離陸後だけスティックを送る。お試しモードでは送らない） ----
             if ser is not None and transmitting and not args.dry_run:
@@ -364,6 +393,7 @@ def main():
                                 drone_flying = telem["mode"] in (2, 6)
                                 if drone_flying != flying:
                                     flying = drone_flying
+                                    t_takeoff = time.time() if flying else None
                                     if not flying:
                                         pid_x.reset()
                                         pid_y.reset()
@@ -378,7 +408,8 @@ def main():
                         f"{'試' if args.dry_run else ('TX' if transmitting else '--')} arm{arm_count} "
                         f"x{pp[0]:+.2f} y{pp[1]:+.2f} z{pp[2]:+.2f} "
                         f"a{ail:+.2f} e{ele:+.2f} t{thr:+.2f} "
-                        f"{('%.1fV' % telem['v']) if telem else ''} {stop_reason}")
+                        f"{('%.1fV' % telem['v']) if telem else ''} "
+                        f"{'静定中' if settling else ''}{stop_reason}")
                 width = min(shutil.get_terminal_size((80, 24)).columns - 2, 76)
                 sys.stdout.write("\r" + line[:width] + "\033[K")
                 sys.stdout.flush()
