@@ -12,8 +12,16 @@ import argparse
 
 import cv2
 import numpy as np
+from matplotlib import font_manager
 from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
+
+# 日本語が豆腐にならないよう、入っている和文フォントを使う
+plt.rcParams["pdf.fonttype"] = 42  # TrueType で埋め込む（和文フォントの埋め込みに必要）
+for _name in ("Arial Unicode MS", "Hiragino Sans", "Noto Sans CJK JP"):
+    if _name in {f.name for f in font_manager.fontManager.ttflist}:
+        plt.rcParams["font.family"] = _name
+        break
 
 DICT = cv2.aruco.DICT_4X4_50
 PX_PER_MODULE = 40  # 画像の解像度（印刷時のにじみを防ぐため大きめ）
@@ -53,14 +61,25 @@ def main():
             ax.set_yticks([])
             for spine in ax.spines.values():
                 spine.set_visible(False)
-            fig.text(0.15 + w + 0.04, y - h / 2,
+            # 座標の向きを紙に描く（床に置いたときの x, y の向き）
+            ax.annotate("", xy=(1.28, 0.5), xytext=(1.02, 0.5), xycoords="axes fraction",
+                        arrowprops=dict(arrowstyle="-|>", color="red", lw=1.5))
+            ax.text(1.31, 0.5, "+x", color="red", transform=ax.transAxes, va="center", fontsize=10)
+            ax.annotate("", xy=(0.5, 1.28), xytext=(0.5, 1.02), xycoords="axes fraction",
+                        arrowprops=dict(arrowstyle="-|>", color="blue", lw=1.5))
+            ax.text(0.5, 1.31, "+y", color="blue", transform=ax.transAxes, ha="center", fontsize=10)
+
+            fig.text(0.15 + w + 0.12, y - h / 2,
                      f"id = {marker_id}\nsize = {size_cm:.1f} cm",
                      va="center", fontsize=11, family="monospace")
-            y -= h + 0.06
+            y -= h + 0.09
 
-        fig.text(0.15, 0.06,
+        fig.text(0.15, 0.04,
                  "白い余白（マーカーの1マス分以上）を残して切り取ること。\n"
-                 "印刷後に黒い正方形の一辺を実測し、その値を tracker に渡す。",
+                 "印刷後に黒い正方形の一辺を実測し、その値を tracker に渡す。\n\n"
+                 "床に置く基準マーカー（id 0）は、文字が読める向きで置く。そのとき\n"
+                 "  +x = 紙の右方向 / +y = 紙の奥方向（上側）/ +z = 真上（高さ）\n"
+                 "矢印はこの向きを示す。紙を回すと座標の向きも一緒に回る。",
                  fontsize=9)
         pdf.savefig(fig)
         plt.close(fig)
