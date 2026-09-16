@@ -86,19 +86,32 @@ def marker_object_points(size_m: float) -> np.ndarray:
     return np.array([[-h, h, 0], [h, h, 0], [h, -h, 0], [-h, -h, 0]], dtype=np.float32)
 
 
-def solve_pose(obj_points, corners, K, dist):
-    """平面マーカーの姿勢には2つの解がある。再投影誤差が小さい方を選ぶ。
+def rotation_diff_deg(R1, R2) -> float:
+    """2つの姿勢の差 [deg]"""
+    cos = (np.trace(R1.T @ R2) - 1.0) / 2.0
+    return float(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
 
-    戻り値: (rvec, tvec, 誤差比) 誤差比が 1 に近いほど、どちらの解か決めにくい
+
+def solve_pose(obj_points, corners, K, dist, prev_R=None):
+    """平面マーカーの姿勢には2つの解がある。どちらかを選ぶ。
+
+    再投影誤差に差があればその小さい方。差が小さくて決めきれないときは、
+    1つ前のフレームの姿勢に近い方を選ぶ（解が毎フレーム反転するのを防ぐ）。
+
+    戻り値: (rvec, tvec, 誤差比) 誤差比が 1 に近いほど判別が難しい
     """
     ok, rvecs, tvecs, errors = cv2.solvePnPGeneric(
         obj_points, corners, K, dist, flags=cv2.SOLVEPNP_IPPE_SQUARE)
     if not ok or len(rvecs) == 0:
         return None, None, None
     errs = [float(e) for e in np.array(errors).ravel()]
-    best = int(np.argmin(errs))
+    order = int(np.argmin(errs))
     ratio = (sorted(errs)[0] / sorted(errs)[1]) if len(errs) > 1 and sorted(errs)[1] > 0 else 0.0
-    return rvecs[best], tvecs[best], ratio
+
+    if prev_R is not None and len(rvecs) > 1 and ratio > 0.6:
+        diffs = [rotation_diff_deg(cv2.Rodrigues(r)[0], prev_R) for r in rvecs]
+        order = int(np.argmin(diffs))
+    return rvecs[order], tvecs[order], ratio
 
 
 def depth_at(depth_frame, corners, frame_size) -> float:
@@ -163,6 +176,7 @@ def main():
         t0 = time.time()
         last_print = 0.0
         frames = 0
+        prev_R = {}  # マーカーごとの直前の姿勢
         try:
             while True:
                 pkt = q_video.get()
@@ -191,11 +205,12 @@ def main():
                 for c, marker_id in (zip(corners, ids.ravel()) if ids is not None else []):
                     if args.id is not None and marker_id != args.id:
                         continue
-                    rvec, tvec, ratio = solve_pose(obj_points, c[0], K, dist)
+                    rvec, tvec, ratio = solve_pose(obj_points, c[0], K, dist, prev_R.get(int(marker_id)))
                     if rvec is None:
                         continue
                     x, y, z = tvec.ravel()
                     R, _ = cv2.Rodrigues(rvec)
+                    prev_R[int(marker_id)] = R
                     yaw = np.degrees(np.arctan2(R[0, 0], R[2, 0]))
                     d = depth_at(depth_frame, c[0], (width, height)) if args.depth else float("nan")
                     found.append((int(marker_id), x, y, z, float(np.linalg.norm(tvec)), yaw, d, ratio, rvec, tvec, c))
