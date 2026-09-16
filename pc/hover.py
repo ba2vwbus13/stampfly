@@ -53,6 +53,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "oakd"))
 from marker_common import (RESOLUTIONS, build_pipeline, latest, make_detector,  # noqa: E402
                            marker_object_points, solve_pose, wrap_deg)
 
+MODE_NAMES = {0: "INIT", 1: "CALIB", 2: "FLIGHT", 3: "PARKING",
+              4: "LOG", 5: "LANDING", 6: "FLIP"}
 DEG_PER_STICK = 36.0   # スティック 1.0 で 36 度（実測で確認済み）
 ALT_AUTO = 4
 
@@ -199,6 +201,7 @@ def main():
     flying = False          # 離陸指令を出したかどうか（PC側の認識）
     transmitting = True
     arm_pulse = False
+    arm_count = 0
     stop_reason = ""
 
     pos_f = None
@@ -233,6 +236,7 @@ def main():
                 key = sys.stdin.read(1)
                 if key == " ":
                     arm_pulse = True
+                    arm_count += 1
                     flying = not flying
                     pid_x.reset()
                     pid_y.reset()
@@ -322,18 +326,20 @@ def main():
                             p = line.strip().split(",")
                             if len(p) >= 13:
                                 telem = {"v": float(p[5]), "alt": float(p[6]), "mode": int(p[7])}
+                                telem["t_recv"] = time.time()
 
             # ---- 表示（1行に収める） ----
             if now - last_draw > 0.2:
                 last_draw = now
-                p = pos_f if pos_f is not None else np.array([np.nan] * 3)
-                line = (f"{'OK' if seen else '--'} "
-                        f"x{p[0]:+.2f} y{p[1]:+.2f} z{p[2]:+.2f} "
-                        f"→{target[0]:+.2f},{target[1]:+.2f},{target[2]:+.2f} | "
-                        f"ail{ail:+.2f} ele{ele:+.2f} thr{thr:+.2f} | "
-                        f"{'FLY' if flying else 'IDLE'} {'TX' if transmitting else '--'} "
-                        f"{('%.2fV' % telem['v']) if telem else ''} "
-                        f"{latency:.0f}ms {stop_reason}")
+                pp = pos_f if pos_f is not None else np.array([np.nan] * 3)
+                mode_txt = MODE_NAMES.get(telem.get("mode"), "----") if telem else "通信なし"
+                link = "OK" if telem and time.time() - telem.get("t_recv", 0) < 1.0 else "--"
+                line = (f"{mode_txt:7s} 機体{link} "
+                        f"{'FLY' if flying else 'IDLE'}{'TX' if transmitting else '停止'} "
+                        f"arm{arm_count} | "
+                        f"{'見' if seen else '×'} x{pp[0]:+.2f} y{pp[1]:+.2f} z{pp[2]:+.2f} | "
+                        f"a{ail:+.2f} e{ele:+.2f} t{thr:+.2f} "
+                        f"{('%.2fV' % telem['v']) if telem else ''} {stop_reason}")
                 width = shutil.get_terminal_size((100, 24)).columns
                 sys.stdout.write("\r" + line[:width - 1] + "\033[K")
                 sys.stdout.flush()
