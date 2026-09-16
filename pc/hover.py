@@ -30,6 +30,7 @@
     * 決めた範囲（既定 ±0.8m、高さ 1.2m）を出たら送信を止める
     * 傾ける角度は既定 8 度まで
     * M5GO のボタン C（停止）、C 長押し（即時停止）はいつでも効く
+    * **Atom JoyStick の電源は切っておくこと**（同時に送信すると指令が打ち消される）
 """
 
 import argparse
@@ -37,6 +38,7 @@ import csv
 import glob
 import pathlib
 import select
+import shutil
 import sys
 import termios
 import time
@@ -315,18 +317,19 @@ def main():
                             if len(p) >= 13:
                                 telem = {"v": float(p[5]), "alt": float(p[6]), "mode": int(p[7])}
 
-            # ---- 表示 ----
-            if now - last_draw > 0.1:
+            # ---- 表示（1行に収める） ----
+            if now - last_draw > 0.2:
                 last_draw = now
                 p = pos_f if pos_f is not None else np.array([np.nan] * 3)
-                sys.stdout.write(
-                    f"\r{'見' if seen else '× '} x{p[0]:+.2f} y{p[1]:+.2f} z{p[2]:+.2f} "
-                    f"→ 目標 {target[0]:+.2f},{target[1]:+.2f},{target[2]:+.2f} | "
-                    f"ail{ail:+.2f} ele{ele:+.2f} thr{thr:+.2f} | "
-                    f"{'飛行中' if flying else '待機 '} "
-                    f"{'送信' if transmitting else '停止'} "
-                    f"{('V%.2f' % telem['v']) if telem else ''} "
-                    f"lat{latency:.0f}ms {stop_reason}      ")
+                line = (f"{'OK' if seen else '--'} "
+                        f"x{p[0]:+.2f} y{p[1]:+.2f} z{p[2]:+.2f} "
+                        f"→{target[0]:+.2f},{target[1]:+.2f},{target[2]:+.2f} | "
+                        f"ail{ail:+.2f} ele{ele:+.2f} thr{thr:+.2f} | "
+                        f"{'FLY' if flying else 'IDLE'} {'TX' if transmitting else '--'} "
+                        f"{('%.2fV' % telem['v']) if telem else ''} "
+                        f"{latency:.0f}ms {stop_reason}")
+                width = shutil.get_terminal_size((100, 24)).columns
+                sys.stdout.write("\r" + line[:width - 1] + "\033[K")
                 sys.stdout.flush()
 
             if writer:

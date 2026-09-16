@@ -24,13 +24,17 @@ PC → M5GO → StampFly の経路で 50Hz の指令を送り続ける。
 安全について:
     * 指令が 0.3 秒途切れると M5GO が送信を止め、機体は自動着陸する。
     * M5GO のボタン C（送信停止）、C 長押し（即時停止）はいつでも使える。
-    * Atom JoyStick を電源に入れておけば、手動操縦に切り替えられる。
+    * **Atom JoyStick の電源は切っておくこと。** 電源が入っていると 50Hz で
+      「ボタンを押していない」指令を送り続けるため、こちらの離陸指令が
+      打ち消されて機体が離陸しない。手動に戻すときは、このプログラムを
+      終了してから JoyStick の電源を入れる。
 """
 
 import argparse
 import csv
 import glob
 import select
+import shutil
 import sys
 import termios
 import time
@@ -96,12 +100,15 @@ def main():
         writer.writerow(["t_s", "roll", "pitch", "yaw", "voltage", "altitude",
                          "mode", "alt_flag", "front_mm", "thrust", "duty_fl", "duty_rr"])
 
+    t_start = time.time()
     old_term = termios.tcgetattr(sys.stdin)
     tty.setcbreak(sys.stdin.fileno())
     print(f"接続: {port}   スペース=離陸/着陸  wasd=移動  qe=旋回  rf=高度  x=中立  z=停止  Ctrl-C=終了")
 
     rx = ""
     t_next = time.time()
+    last_draw = 0.0
+    now = 0.0
     try:
         while True:
             # ---- キー入力 ----
@@ -137,9 +144,10 @@ def main():
                     raise KeyboardInterrupt
 
             # ---- 指令の送信（50Hz） ----
-            now = time.time()
-            if now >= t_next:
-                t_next = now + 1.0 / SEND_HZ
+            clock = time.time()
+            now = clock - t_start
+            if clock >= t_next:
+                t_next = clock + 1.0 / SEND_HZ
                 if transmitting:
                     cmd = (f"C,{throttle.get():.3f},{aileron.get():.3f},{elevator.get():.3f},"
                            f"{rudder.get():.3f},{1 if arm_pulse else 0},0,0,{alt_mode}\n")
@@ -165,17 +173,19 @@ def main():
                     elif line.startswith("#") or line.startswith("S,"):
                         last_telem_line = line
 
-            # ---- 画面表示（10Hz） ----
-            if telem and int(now * 10) % 2 == 0:
-                sys.stdout.write(
-                    f"\r{MODE_NAMES.get(telem['mode'], '?'):8s} "
-                    f"{telem['v']:4.2f}V h{telem['alt']:5.2f}m "
-                    f"R{telem['roll']:+5.1f} P{telem['pitch']:+5.1f} Y{telem['yaw']:+6.1f} | "
-                    f"thr{throttle.get():+.2f} ail{aileron.get():+.2f} "
-                    f"ele{elevator.get():+.2f} rud{rudder.get():+.2f} | "
-                    f"FL{telem['fl']:.2f} RR{telem['rr']:.2f} "
-                    f"{'ALT_AUTO' if alt_mode == ALT_AUTO else 'ALT_MAN '} "
-                    f"{'送信中' if transmitting else '停止中'}   ")
+            # ---- 画面表示（5Hz、1行に収める） ----
+            if telem and now - last_draw > 0.2:
+                last_draw = now
+                line = (f"{MODE_NAMES.get(telem['mode'], '?'):7s} "
+                        f"{telem['v']:4.2f}V h{telem['alt']:4.2f} "
+                        f"R{telem['roll']:+5.1f} P{telem['pitch']:+5.1f} | "
+                        f"ail{aileron.get():+.2f} ele{elevator.get():+.2f} "
+                        f"rud{rudder.get():+.2f} thr{throttle.get():+.2f} | "
+                        f"FL{telem['fl']:.2f} RR{telem['rr']:.2f} "
+                        f"{'AUTO' if alt_mode == ALT_AUTO else 'MAN '} "
+                        f"{'TX' if transmitting else '--'}")
+                width = shutil.get_terminal_size((100, 24)).columns
+                sys.stdout.write("\r" + line[:width - 1] + "\033[K")
                 sys.stdout.flush()
             time.sleep(0.002)
     except KeyboardInterrupt:
