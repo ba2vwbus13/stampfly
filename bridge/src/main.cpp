@@ -58,6 +58,7 @@ static uint32_t sent_count  = 0;
 static uint32_t recv_count  = 0;
 static uint32_t last_recv_ms = 0;
 static bool transmitting    = true;   // ボタンC で false
+static bool manual_mode     = false;  // M5GO のボタンだけで操作している間は true
 static String line;
 
 // 機体からのテレメトリ（受信コールバックからはコピーだけして、loop で処理する）
@@ -178,6 +179,7 @@ static void handle_line(const String &s) {
             if (comma < 0) break;
             from = comma + 1;
         }
+        manual_mode = false;   // PC が指令を送ってきたら PC 優先に戻す
         f_throttle = v[0];
         f_aileron  = v[1];
         f_elevator = v[2];
@@ -297,20 +299,23 @@ void loop() {
     if (M5.BtnA.wasPressed()) {          // 離陸 / 着陸
         arm_until    = millis() + ARM_PULSE_MS;
         transmitting = true;
+        manual_mode  = true;   // PC が黙っていても送り続ける（ボタンだけで飛ばせる）
     }
     if (M5.BtnB.wasPressed()) {          // その場で止まる（スティックを中立に）
         f_throttle = f_aileron = f_elevator = f_rudder = 0;
     }
     if (M5.BtnC.wasPressed()) {          // 送信停止 → 機体は自動着陸
         transmitting = false;
+        manual_mode  = false;
     }
     if (M5.BtnC.pressedFor(1000)) {      // 長押し = 即時停止
         stop_now();
         M5.Speaker.tone(2000, 200);
     }
 
-    // PC からの指令が途切れたら送信を止める（機体は自動着陸に入る）
-    if (transmitting && last_pc_ms != 0 && (millis() - last_pc_ms) > PC_TIMEOUT_MS) {
+    // PC からの指令が途切れたら送信を止める（機体は自動着陸に入る）。
+    // ただし M5GO のボタンで操作しているときは止めない
+    if (transmitting && !manual_mode && last_pc_ms != 0 && (millis() - last_pc_ms) > PC_TIMEOUT_MS) {
         transmitting = false;
     }
 

@@ -267,6 +267,8 @@ def main():
                 if key == " ":
                     arm_pulse = True
                     arm_count += 1
+                    if args.dry_run:
+                        stop_reason = "お試しモードなので離陸しません"
                     flying = not flying
                     pid_x.reset()
                     pid_y.reset()
@@ -372,7 +374,8 @@ def main():
                 pp = pos_f if pos_f is not None else np.array([np.nan] * 3)
                 mode_txt = MODE_NAMES.get(telem.get("mode"), "----") if telem else "通信なし"
                 link = "OK" if telem and time.time() - telem.get("t_recv", 0) < 1.0 else "--"
-                line = (f"{mode_txt:7s}{link} {'TX' if transmitting else '--'} arm{arm_count} "
+                line = (f"{mode_txt:7s}{link} "
+                        f"{'試' if args.dry_run else ('TX' if transmitting else '--')} arm{arm_count} "
                         f"x{pp[0]:+.2f} y{pp[1]:+.2f} z{pp[2]:+.2f} "
                         f"a{ail:+.2f} e{ele:+.2f} t{thr:+.2f} "
                         f"{('%.1fV' % telem['v']) if telem else ''} {stop_reason}")
