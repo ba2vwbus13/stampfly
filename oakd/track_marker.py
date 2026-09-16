@@ -24,17 +24,17 @@ import cv2
 import depthai as dai
 import numpy as np
 
-WIDTH, HEIGHT = 1280, 720
+RESOLUTIONS = {"720p": (1280, 720), "1080p": (1920, 1080)}
 DICT = cv2.aruco.DICT_4X4_50
 
 
-def build_pipeline(fps: int):
+def build_pipeline(fps: int, width: int, height: int):
     pipeline = dai.Pipeline()
 
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
     cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
-    cam.setPreviewSize(WIDTH, HEIGHT)
+    cam.setPreviewSize(width, height)
     cam.setInterleaved(False)
     cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
     cam.setFps(fps)
@@ -51,7 +51,7 @@ def build_pipeline(fps: int):
     stereo.setLeftRightCheck(True)
     stereo.setSubpixel(True)
     stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)
-    stereo.setOutputSize(WIDTH, HEIGHT)
+    stereo.setOutputSize(width, height)
     left.out.link(stereo.left)
     right.out.link(stereo.right)
 
@@ -85,6 +85,8 @@ def main():
     ap.add_argument("--size", type=float, required=True, help="マーカー一辺の実測値 [cm]")
     ap.add_argument("--id", type=int, default=None, help="この id のみ追跡（省略時は全部）")
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--res", choices=sorted(RESOLUTIONS), default="1080p",
+                    help="カラーの解像度。遠くのマーカーを見るときは 1080p")
     ap.add_argument("--no-gui", action="store_true", help="ウィンドウを出さない")
     ap.add_argument("--csv", default=None, help="CSV 保存先")
     ap.add_argument("--seconds", type=float, default=None, help="この秒数で自動終了")
@@ -102,11 +104,15 @@ def main():
         writer = csv.writer(csv_file)
         writer.writerow(["t_s", "id", "x_m", "y_m", "z_m", "dist_m", "yaw_deg", "depth_m"])
 
-    with dai.Device(build_pipeline(args.fps)) as device:
+    width, height = RESOLUTIONS[args.res]
+    with dai.Device(build_pipeline(args.fps, width, height)) as device:
         calib = device.readCalibration()
-        K = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, WIDTH, HEIGHT), dtype=np.float64)
+        K = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, width, height), dtype=np.float64)
         dist = np.array(calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A), dtype=np.float64)[:8]
-        print(f"USB {device.getUsbSpeed()}  marker {args.size:.1f} cm  {WIDTH}x{HEIGHT}@{args.fps}")
+        px_per_m = K[0, 0]
+        print(f"USB {device.getUsbSpeed()}  marker {args.size:.1f} cm  {width}x{height}@{args.fps}")
+        print(f"目安: 距離 2m でマーカーは約 {px_per_m * size_m / 2.0:.0f} px "
+              f"(20〜25 px 以上で検出できる)")
         print("t[s]     id    X[m]    Y[m]    Z[m]  dist[m]  yaw[deg]  depth[m]")
 
         q_rgb = device.getOutputQueue("rgb", 4, blocking=False)
