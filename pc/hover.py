@@ -209,13 +209,20 @@ def main():
     tracker = Tracker(args)
     print(f"カメラ USB {tracker.usb}  {tracker.width}x{tracker.height}@{args.fps}")
 
+    # お試しモードでも、機体の状態を見るために受信だけは行う（送信はしない）
     ser = None
-    if not args.dry_run:
+    try:
         port = args.bridge_port or find_bridge_port()
         ser = serial.Serial(port, 115200, timeout=0)
-        print(f"中継機: {port}")
-    else:
-        print("お試しモード: 指令は計算するだけで送りません")
+        print(f"中継機: {port}" + ("（お試しモード: 受信のみ。指令は送りません）" if args.dry_run else ""))
+    except SystemExit:
+        if not args.dry_run:
+            raise
+        print("中継機が見つかりません。お試しモードなのでカメラだけで続けます")
+    except serial.SerialException as e:
+        if not args.dry_run:
+            raise
+        print(f"中継機を開けません({e})。お試しモードなのでカメラだけで続けます")
 
     pid_x, pid_y = PID(args.kp, args.ki, args.kd), PID(args.kp, args.ki, args.kd)
     target = np.array([0.0, 0.0, args.target_z])
@@ -331,8 +338,8 @@ def main():
                                       args.max_tilt, args.flip_roll, args.flip_pitch)
                 thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
 
-            # ---- 送信（離陸後だけスティックを送る） ----
-            if ser is not None and transmitting:
+            # ---- 送信（離陸後だけスティックを送る。お試しモードでは送らない） ----
+            if ser is not None and transmitting and not args.dry_run:
                 s_thr, s_ail, s_ele = (thr, ail, ele) if flying else (0.0, 0.0, 0.0)
                 ser.write(f"C,{s_thr:.3f},{s_ail:.3f},{s_ele:.3f},0,"
                           f"{1 if arm_pulse else 0},0,0,{ALT_AUTO}\n".encode())
