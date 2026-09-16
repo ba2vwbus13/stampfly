@@ -146,12 +146,50 @@ D455 ─USB3─▶ PC（Python）─USBシリアル─▶ 送信用ESP32（Stick
 - 最初はプロペラを外して、指令の向きと符号を確認する。
 
 **次回の手順**
-1. D455 を **USB 3 端子** でつなぎ、`pyrealsense2` が入るか確認する。
-   - macOS では `pip install pyrealsense2` が使えないことがある。その場合は librealsense をソースからビルドするか、Linux / Windows マシンを使う。
-   - **新しいマシンの OS をまず確認する。**
-2. カラーと深度の映像を表示し、机の上や手で持った StampFly の3次元位置をリアルタイム表示する（飛ばさない）。
-3. タスクA の送信機を作り、PC から指令を送れるようにする。
-4. プロペラなしで指令を確認し、その後に1点ホバリングの位置制御を試す。
+1. カラーと深度の映像を表示し、机の上や手で持った StampFly の3次元位置をリアルタイム表示する（飛ばさない）。
+2. タスクA の送信機を作り、PC から指令を送れるようにする。
+3. プロペラなしで指令を確認し、その後に1点ホバリングの位置制御を試す。
+
+**macOS への pyrealsense2 導入（2026-09-16 実施済み・再現手順）**
+
+macOS (Apple Silicon) には `pyrealsense2` の配布が無いため、ソースからビルドする。Homebrew の `librealsense` は C++ ライブラリのみで Python バインディングが入らない。
+
+```bash
+brew install cmake libusb pkg-config
+git clone --depth 1 --branch v2.56.5 https://github.com/IntelRealSense/librealsense.git
+cd librealsense
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_PYTHON_BINDINGS=ON -DPYTHON_EXECUTABLE=$(which python3) \
+  -DBUILD_EXAMPLES=OFF -DBUILD_GRAPHICAL_EXAMPLES=OFF -DBUILD_UNIT_TESTS=OFF \
+  -DFORCE_RSUSB_BACKEND=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake --build build -j $(sysctl -n hw.ncpu)      # 10分程度
+```
+
+ビルドで `build/Release/` に `pyrealsense2*.so` と `librealsense2*.dylib` ができる。恒久的な場所へ置き、site-packages からパスを通す。
+
+```bash
+mkdir -p ~/.local/lib/realsense
+cp -a build/Release/pyrealsense2*.so build/Release/librealsense2*.dylib ~/.local/lib/realsense/
+python3 -c "import site;print(site.getsitepackages()[0])"   # 出力先に realsense.pth を作る
+echo ~/.local/lib/realsense > <site-packages>/realsense.pth
+```
+
+補足:
+- `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` は CMake 4 系で古い記述をビルドするために必要。
+- `-DFORCE_RSUSB_BACKEND=ON` は macOS で必須。
+- 学内ネットワークではプロキシ指定が必要。
+
+**macOS で残っている問題（未解決）**
+
+- D455 は macOS 側からは UVC カメラとして見えている（`system_profiler SPCameraDataType` に "Intel(R) RealSense(TM) Depth Camera 455 Depth" が出る）。
+- しかし `pyrealsense2` から開こうとすると `RuntimeError: failed to set power state` になる。
+- 原因の候補: プロセスにカメラ利用の許可（TCC）が無い、macOS の UVC ドライバがデバイスを掴んでいる、USB 2 接続。
+- 試すこと:
+  1. **ユーザー自身のターミナルから** `python3 realsense/check_device.py` を実行する（許可ダイアログはターミナルアプリに対して出る）。
+  2. システム設定 → プライバシーとセキュリティ → カメラ で、ターミナルを許可する。
+  3. `sudo python3 realsense/check_device.py` を試す。
+  4. それでも駄目なら Linux 機に移る（`pip install pyrealsense2` だけで済む）。
+- 確認用スクリプトは `realsense/check_device.py`（デバイス情報の表示と、1フレーム取得、画面中央までの距離表示）。
 
 **優先順位の目安**
 - D（位置の表示）と A（送信機）は並行して進められる。
