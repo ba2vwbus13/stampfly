@@ -37,10 +37,12 @@ import argparse
 import csv
 import glob
 import pathlib
+import queue as queue_mod
 import select
 import shutil
 import sys
 import termios
+import threading
 import time
 import tty
 
@@ -148,6 +150,25 @@ def json_load(path):
     return json.loads(p.read_text())
 
 
+def start_key_reader():
+    """キー入力を別スレッドで読み、キューに入れる
+
+    select() を使う方法だと環境によって拾えないことがあったので、
+    読み取り専用のスレッドを回す。
+    """
+    keys = queue_mod.Queue()
+
+    def run():
+        while True:
+            ch = sys.stdin.read(1)
+            if not ch:
+                break
+            keys.put(ch)
+
+    threading.Thread(target=run, daemon=True).start()
+    return keys
+
+
 def find_bridge_port():
     ports = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/cu.wchusbserial*"))
     if not ports:
@@ -222,7 +243,9 @@ def main():
     old_term = termios.tcgetattr(sys.stdin) if interactive else None
     if interactive:
         tty.setcbreak(sys.stdin.fileno())
-    print("スペース=離陸/着陸  wasd=目標移動  rf=目標高度  h=その場で止まる  z=停止  Ctrl-C=終了")
+    keys = start_key_reader() if interactive else queue_mod.Queue()
+    print("スペース=離陸/着陸（M5GOのAボタンでも可）  wasd=目標移動  rf=目標高度  "
+          "h=その場で止まる  z=停止  Ctrl-C=終了")
     t0 = time.time()
     last_draw = 0.0
 
@@ -232,8 +255,8 @@ def main():
             now = time.time() - t0
 
             # ---- キー入力 ----
-            while interactive and select.select([sys.stdin], [], [], 0)[0]:
-                key = sys.stdin.read(1)
+            while not keys.empty():
+                key = keys.get()
                 if key == " ":
                     arm_pulse = True
                     arm_count += 1
@@ -327,6 +350,14 @@ def main():
                             if len(p) >= 13:
                                 telem = {"v": float(p[5]), "alt": float(p[6]), "mode": int(p[7])}
                                 telem["t_recv"] = time.time()
+                                # 機体が FLIGHT なら飛んでいる。M5GO の A ボタンで
+                                # 離陸させた場合もこれで追随できる
+                                drone_flying = telem["mode"] in (2, 6)
+                                if drone_flying != flying:
+                                    flying = drone_flying
+                                    if not flying:
+                                        pid_x.reset()
+                                        pid_y.reset()
 
             # ---- 表示（1行に収める） ----
             if now - last_draw > 0.2:
@@ -334,14 +365,12 @@ def main():
                 pp = pos_f if pos_f is not None else np.array([np.nan] * 3)
                 mode_txt = MODE_NAMES.get(telem.get("mode"), "----") if telem else "通信なし"
                 link = "OK" if telem and time.time() - telem.get("t_recv", 0) < 1.0 else "--"
-                line = (f"{mode_txt:7s} 機体{link} "
-                        f"{'FLY' if flying else 'IDLE'}{'TX' if transmitting else '停止'} "
-                        f"arm{arm_count} | "
-                        f"{'見' if seen else '×'} x{pp[0]:+.2f} y{pp[1]:+.2f} z{pp[2]:+.2f} | "
+                line = (f"{mode_txt:7s}{link} {'TX' if transmitting else '--'} arm{arm_count} "
+                        f"x{pp[0]:+.2f} y{pp[1]:+.2f} z{pp[2]:+.2f} "
                         f"a{ail:+.2f} e{ele:+.2f} t{thr:+.2f} "
-                        f"{('%.2fV' % telem['v']) if telem else ''} {stop_reason}")
-                width = shutil.get_terminal_size((100, 24)).columns
-                sys.stdout.write("\r" + line[:width - 1] + "\033[K")
+                        f"{('%.1fV' % telem['v']) if telem else ''} {stop_reason}")
+                width = min(shutil.get_terminal_size((80, 24)).columns - 2, 76)
+                sys.stdout.write("\r" + line[:width] + "\033[K")
                 sys.stdout.flush()
 
             if writer:
