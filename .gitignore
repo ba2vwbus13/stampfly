@@ -9,3 +9,6 @@ backup/*.bin
 __pycache__/
 *.csv
 .DS_Store
+
+# OAK-D の一時出力
+oakd_*.png

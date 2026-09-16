@@ -106,8 +106,15 @@
 - 部屋に置いた深度カメラで StampFly の3次元位置を測る。
 - PC が位置制御を計算し、ESP-NOW で操縦指令を送って自動飛行させる。
 
-**決まったこと**
-- **カメラは D455 を使う**。手元には D455 と D435i がある。
+**決まったこと（2026-09-16 更新: カメラは OAK-D に変更）**
+- **カメラは OAK-D（Luxonis / DepthAI）を使う。** macOS で動作確認済み。
+  - `pip install depthai==2.33.0.0`（Apple Silicon 用の配布あり）だけで導入できた。
+  - USB 3（SUPER）で接続。カラー IMX378（12MP）、ステレオ OV9282 ×2、IMU BNO086。
+  - 深度計算をカメラ内部で行うため Mac 側が軽い。ニューラルネットも内部で動き、検出した物体の XYZ を直接返せる。
+  - 確認スクリプト: `oakd/check_device.py`（1フレーム取得、中央までの距離表示、PNG 保存）。実測で中央1.53m、有効画素58%。
+- **RealSense D455 / D435i は macOS では使えない（保留）。** 下の「RealSense」節を参照。Linux 機を使うときに再開する。
+- 以下は RealSense を前提に検討した内容だが、置き方と全体構成は OAK-D でもそのまま通用する。
+- （旧）カメラは D455 を使う。手元には D455 と D435i がある。
   - D455 は左右カメラの間隔が95mm（D435iは50mm）。2m先の奥行き誤差がD435iの約半分になる。
   - カラーカメラがグローバルシャッターで、動く機体でも像が歪みにくい。
   - カラーと深度の視野がほぼ同じなので、画面の端まで対応が取れる。
@@ -179,7 +186,14 @@ echo ~/.local/lib/realsense > <site-packages>/realsense.pth
 - `-DFORCE_RSUSB_BACKEND=ON` は macOS で必須。
 - 学内ネットワークではプロキシ指定が必要。
 
-**macOS で残っている問題（未解決）**
+**macOS で RealSense は動かなかった（結論・2026-09-16）**
+
+- D455 は macOS からは UVC カメラとして見えるが、`pyrealsense2` から開くと `RuntimeError: failed to set power state`。
+- `sudo` で実行すると segmentation fault（即死）。ユーザーのターミナルから実行してもカメラ許可のダイアログは出ず、USB を開く段階で失敗している。
+- macOS + Apple Silicon + 最新 macOS の組み合わせは実質未対応と判断し、**OAK-D に切り替えた**。
+- Linux 機で使う場合は `pip install pyrealsense2` だけで済むので、そのとき再開する。
+
+**（参考）macOS で試したときの詳細**
 
 - D455 は macOS 側からは UVC カメラとして見えている（`system_profiler SPCameraDataType` に "Intel(R) RealSense(TM) Depth Camera 455 Depth" が出る）。
 - しかし `pyrealsense2` から開こうとすると `RuntimeError: failed to set power state` になる。
