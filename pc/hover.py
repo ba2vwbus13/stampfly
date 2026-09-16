@@ -287,8 +287,13 @@ def main():
                         stop_reason = "範囲外(高さ)"
 
             # ---- 位置制御 ----
+            # 飛んでいなくても計算はする（お試しモードで向きを確認できるように）。
+            # 送信するのは離陸後だけ。
             ail = ele = thr = 0.0
-            if pos_f is not None and flying and transmitting:
+            if pos_f is not None:
+                if not flying:
+                    pid_x.reset()   # 飛んでいない間は積分を溜めない
+                    pid_y.reset()
                 err = target - pos_f
                 dt = max(1.0 / args.fps, 1e-3)
                 # 世界座標での必要な傾き
@@ -299,10 +304,11 @@ def main():
                                       args.max_tilt, args.flip_roll, args.flip_pitch)
                 thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
 
-            # ---- 送信 ----
+            # ---- 送信（離陸後だけスティックを送る） ----
             if ser is not None and transmitting:
-                ser.write(f"C,{thr:.3f},{ail:.3f},{ele:.3f},0,{1 if arm_pulse else 0},0,0,{ALT_AUTO}\n"
-                          .encode())
+                s_thr, s_ail, s_ele = (thr, ail, ele) if flying else (0.0, 0.0, 0.0)
+                ser.write(f"C,{s_thr:.3f},{s_ail:.3f},{s_ele:.3f},0,"
+                          f"{1 if arm_pulse else 0},0,0,{ALT_AUTO}\n".encode())
             arm_pulse = False
 
             # ---- 機体からの返信 ----
