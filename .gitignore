@@ -12,3 +12,6 @@ __pycache__/
 
 # OAK-D の一時出力
 oakd_*.png
+
+# 設置ごとに変わる座標系の設定
+oakd/world_calib.json
