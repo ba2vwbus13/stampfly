@@ -25,7 +25,9 @@
 //
 // M5GO が返す行:
 //   S,<pc_ok>,<sent>,<recv>,<state>
-//   T,<time>,<roll>,<pitch>,<yaw>,<voltage>,<altitude>,<mode>,<alt_flag>,<front_mm>
+//   T,<time>,<roll>,<pitch>,<yaw>,<voltage>,<altitude>,<mode>,<alt_flag>,<front_mm>,<thrust>,<duty_FL>,<duty_RR>
+//     duty_FL は前左、duty_RR は後右のモーター出力（0〜1）。対角の2つだけ機体が送ってくる。
+//     右へ倒す指令なら FL が増えて RR が減る。前へ倒す指令なら FL が減って RR が増える。
 //     機体からのテレメトリ（約5Hz）。mode は 0=INIT 1=AVERAGE 2=FLIGHT 3=PARKING
 //                                       4=LOG 5=AUTO_LANDING 6=FLIP
 
@@ -61,7 +63,7 @@ static String line;
 static volatile bool telem_ready = false;
 static uint8_t telem_buf[120];
 struct Telem {
-    float t, roll, pitch, yaw, voltage, altitude;
+    float t, roll, pitch, yaw, voltage, altitude, thrust, duty_fl, duty_rr;
     uint8_t alt_flag, mode;
     uint16_t front_mm;
     bool valid;
@@ -118,12 +120,16 @@ static void parse_telemetry() {
     telem.yaw      = telem_float(telem_buf, 4);
     telem.voltage  = telem_float(telem_buf, 14);
     telem.altitude = telem_float(telem_buf, 24);
+    telem.thrust   = telem_float(telem_buf, 13);
+    telem.duty_fl  = telem_float(telem_buf, 20);
+    telem.duty_rr  = telem_float(telem_buf, 21);
     telem.alt_flag = telem_buf[110];
     telem.mode     = telem_buf[111];
     memcpy(&telem.front_mm, telem_buf + 112, 2);
     telem.valid    = true;
-    Serial.printf("T,%.2f,%.1f,%.1f,%.1f,%.2f,%.3f,%d,%d,%d\n", telem.t, telem.roll, telem.pitch,
-                  telem.yaw, telem.voltage, telem.altitude, telem.mode, telem.alt_flag, telem.front_mm);
+    Serial.printf("T,%.2f,%.1f,%.1f,%.1f,%.2f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f\n", telem.t, telem.roll,
+                  telem.pitch, telem.yaw, telem.voltage, telem.altitude, telem.mode, telem.alt_flag,
+                  telem.front_mm, telem.thrust, telem.duty_fl, telem.duty_rr);
 }
 
 static void send_packet() {
@@ -224,6 +230,10 @@ static void draw() {
         M5.Display.printf("%-7s %.2fV  h%.2fm", mode_name(telem.mode), telem.voltage, telem.altitude);
         M5.Display.setCursor(10, 130);
         M5.Display.printf("R%+5.1f P%+5.1f Y%+6.1f", telem.roll, telem.pitch, telem.yaw);
+        M5.Display.setTextSize(1);
+        M5.Display.setCursor(180, 214);
+        M5.Display.printf("FL%.2f RR%.2f", telem.duty_fl, telem.duty_rr);
+        M5.Display.setTextSize(2);
     }
 
     M5.Display.setCursor(10, 185);
