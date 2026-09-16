@@ -26,6 +26,7 @@
 // M5GO が返す行:
 //   S,<pc_ok>,<sent>,<recv>,<state>
 //   T,<time>,<roll>,<pitch>,<yaw>,<voltage>,<altitude>,<mode>,<alt_flag>,<front_mm>,<thrust>,<duty_FL>,<duty_RR>
+//   R,<roll_ref>,<pitch_ref>  機体が受け取った指令から作った目標角度[deg]。指令の向きの確認用
 //     duty_FL は前左、duty_RR は後右のモーター出力（0〜1）。対角の2つだけ機体が送ってくる。
 //     右へ倒す指令なら FL が増えて RR が減る。前へ倒す指令なら FL が減って RR が増える。
 //     機体からのテレメトリ（約5Hz）。mode は 0=INIT 1=AVERAGE 2=FLIGHT 3=PARKING
@@ -63,7 +64,7 @@ static String line;
 static volatile bool telem_ready = false;
 static uint8_t telem_buf[120];
 struct Telem {
-    float t, roll, pitch, yaw, voltage, altitude, thrust, duty_fl, duty_rr;
+    float t, roll, pitch, yaw, voltage, altitude, thrust, duty_fl, duty_rr, roll_ref, pitch_ref;
     uint8_t alt_flag, mode;
     uint16_t front_mm;
     bool valid;
@@ -123,6 +124,8 @@ static void parse_telemetry() {
     telem.thrust   = telem_float(telem_buf, 13);
     telem.duty_fl  = telem_float(telem_buf, 20);
     telem.duty_rr  = telem_float(telem_buf, 21);
+    telem.roll_ref  = telem_float(telem_buf, 8);
+    telem.pitch_ref = telem_float(telem_buf, 9);
     telem.alt_flag = telem_buf[110];
     telem.mode     = telem_buf[111];
     memcpy(&telem.front_mm, telem_buf + 112, 2);
@@ -130,6 +133,7 @@ static void parse_telemetry() {
     Serial.printf("T,%.2f,%.1f,%.1f,%.1f,%.2f,%.3f,%d,%d,%d,%.3f,%.3f,%.3f\n", telem.t, telem.roll,
                   telem.pitch, telem.yaw, telem.voltage, telem.altitude, telem.mode, telem.alt_flag,
                   telem.front_mm, telem.thrust, telem.duty_fl, telem.duty_rr);
+    Serial.printf("R,%.2f,%.2f\n", telem.roll_ref, telem.pitch_ref);
 }
 
 static void send_packet() {
