@@ -254,7 +254,7 @@ def main():
         log_file = open(args.log, "w", newline="")
         writer = csv.writer(log_file)
         writer.writerow(["t_s", "x", "y", "z", "head", "tx", "ty", "tz",
-                         "ail", "ele", "thr", "seen", "lat_ms"])
+                         "ail", "ele", "thr", "seen", "lat_ms", "mode", "volt", "flying"])
 
     interactive = sys.stdin.isatty()
     old_term = termios.tcgetattr(sys.stdin) if interactive else None
@@ -393,6 +393,8 @@ def main():
                                 drone_flying = telem["mode"] in (2, 6)
                                 if drone_flying != flying:
                                     flying = drone_flying
+                                    sys.stdout.write("\n" + ("★ 機体が離陸しました\n" if flying
+                                                             else "★ 機体が着陸しました\n"))
                                     t_takeoff = time.time() if flying else None
                                     if not flying:
                                         pid_x.reset()
@@ -415,11 +417,13 @@ def main():
                 sys.stdout.flush()
 
             if writer:
-                p = pos_f if pos_f is not None else np.array([np.nan] * 3)
-                writer.writerow([f"{now:.3f}"] + [f"{v:.4f}" for v in p] +
+                pp_log = pos_f if pos_f is not None else np.array([np.nan] * 3)
+                writer.writerow([f"{now:.3f}"] + [f"{v:.4f}" for v in pp_log] +
                                 [f"{head:.1f}" if head is not None else ""] +
                                 [f"{v:.3f}" for v in target] +
-                                [f"{ail:.3f}", f"{ele:.3f}", f"{thr:.3f}", int(seen), f"{latency:.0f}"])
+                                [f"{ail:.3f}", f"{ele:.3f}", f"{thr:.3f}", int(seen), f"{latency:.0f}",
+                                 telem.get("mode", ""), f"{telem['v']:.2f}" if telem else "",
+                                 int(flying)])
 
             if args.seconds is not None and now > args.seconds:
                 break
