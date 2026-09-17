@@ -204,7 +204,8 @@ def main():
         log_file = open(args.log, "w", newline="")
         writer = csv.writer(log_file)
         writer.writerow(["t_s", "x", "y", "z", "head", "tx", "ty", "tz",
-                         "ail", "ele", "thr", "seen", "mode", "volt", "flying", "nblob"])
+                         "ail", "ele", "thr", "seen", "mode", "volt", "flying", "nblob",
+                         "roll", "pitch", "alt_tof"])
 
     interactive = sys.stdin.isatty()
     old_term = termios.tcgetattr(sys.stdin) if interactive else None
@@ -377,7 +378,8 @@ def main():
                         elif line.startswith("T,"):
                             p = line.strip().split(",")
                             if len(p) >= 13:
-                                telem = {"yaw": float(p[4]), "v": float(p[5]),
+                                telem = {"roll": float(p[2]), "pitch": float(p[3]),
+                                         "yaw": float(p[4]), "v": float(p[5]),
                                          "alt": float(p[6]), "mode": int(p[7]),
                                          "t_recv": time.time()}
                                 if yaw_zero is None and heading0 is not None:
@@ -413,6 +415,7 @@ def main():
                         f"x{pp[0]:+.2f} y{pp[1]:+.2f} z{pp[2]:+.2f} "
                         f"{('h%+.0f' % head) if head is not None else 'h--'} "
                         f"a{ail:+.2f} e{ele:+.2f} t{thr:+.2f} "
+                        f"{('R%+.0f P%+.0f' % (telem['roll'], telem['pitch'])) if telem.get('roll') is not None else ''} "
                         f"{('%.1fV' % telem['v']) if telem else ''} "
                         f"{'静定' if settling else ''}{stop_reason}")
                 width = min(shutil.get_terminal_size((80, 24)).columns - 2, 76)
@@ -426,7 +429,10 @@ def main():
                                 [f"{v:.3f}" for v in target] +
                                 [f"{ail:.3f}", f"{ele:.3f}", f"{thr:.3f}", int(seen),
                                  telem.get("mode", ""), f"{telem['v']:.2f}" if telem else "",
-                                 int(flying), len(blobs[0]) if blobs else 0])
+                                 int(flying), len(blobs[0]) if blobs else 0,
+                                 f"{telem['roll']:.1f}" if telem.get("roll") is not None else "",
+                                 f"{telem['pitch']:.1f}" if telem.get("pitch") is not None else "",
+                                 f"{telem['alt']:.3f}" if telem.get("alt") is not None else ""])
     except KeyboardInterrupt:
         pass
     finally:
