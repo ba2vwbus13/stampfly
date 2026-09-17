@@ -27,7 +27,9 @@ from djitellopy import Tello
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=float, default=10, help="ホバリングさせる時間 [s]")
-    ap.add_argument("--height", type=int, default=80, help="離陸後に上げる高さ [cm]")
+    ap.add_argument("--height", type=int, default=40,
+                    help="ホバリングする高さ [cm]。離陸は必ず約80cmまで上がるので、"
+                         "その後この高さまで降りる（下向きToFで確認。30cm以上を推奨）")
     ap.add_argument("--log", default=None)
     args = ap.parse_args()
 
@@ -48,9 +50,24 @@ def main():
     samples = []
     print(f"離陸します。{args.seconds:.0f}秒ホバリングして着陸します")
     try:
-        tello.takeoff()
-        if args.height > 80:
-            tello.move_up(args.height - 80)   # 離陸後の既定は約80cm
+        tello.takeoff()   # 仕様で必ず約80cmまで上がる（高さは指定できない）
+        # 目標の高さまで、下向きToFを見ながらゆっくり降りる/上がる
+        t_adj = time.time()
+        while time.time() - t_adj < 8:
+            tof = tello.get_distance_tof()
+            if tof <= 0 or tof > 500:        # 測定範囲外の値は無視
+                time.sleep(0.05)
+                continue
+            err = args.height - tof
+            if abs(err) <= 5:
+                break
+            speed = int(max(-30, min(30, err)))   # 最大30cm/s
+            tello.send_rc_control(0, 0, speed, 0)
+            sys.stdout.write(f"\r高さを調整中: ToF {tof}cm → 目標 {args.height}cm   ")
+            sys.stdout.flush()
+            time.sleep(0.05)
+        tello.send_rc_control(0, 0, 0, 0)
+        print()
 
         t0 = time.time()
         while time.time() - t0 < args.seconds:
