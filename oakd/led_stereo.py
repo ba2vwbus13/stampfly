@@ -33,17 +33,22 @@ LEFT, RIGHT = dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_C
 class LedStereo:
     """左右カメラで LED を追う"""
 
-    def __init__(self, fps=60, led_exposure_us=500, led_iso=400,
-                 marker_exposure_us=1000, marker_iso=400, threshold=200, min_area=3,
+    def __init__(self, fps=60, led_exposure_us=400, led_iso=400,
+                 marker_exposure_us=1000, marker_iso=400, threshold=200, min_area=3, max_area=300,
                  z_min=0.3, z_max=4.0, max_reproj_px=2.0,
-                 world_z_min=-0.05, world_z_max=1.5):
+                 world_z_min=-0.05, world_z_max=1.5, gate_m=0.25):
         self.led_exp, self.led_iso = led_exposure_us, led_iso
         self.marker_exp, self.marker_iso = marker_exposure_us, marker_iso
         self.threshold, self.min_area = threshold, min_area
+        # 窓や白い紙など、大きな明るい面は LED ではないので候補から外す
+        self.max_area = max_area
         self.z_min, self.z_max = z_min, z_max          # カメラから見た距離の範囲 [m]
         self.max_reproj_px = max_reproj_px             # 再投影のずれの上限 [px]
         # 世界座標での高さの範囲。床より下は反射の鏡像なので捨てる
         self.world_z_min, self.world_z_max = world_z_min, world_z_max
+        # 一度見つけたら、その近く(gate_m 以内)の候補だけを見る。
+        # 近くに何も無ければ全体から探し直す
+        self.gate_m = gate_m
 
         pipeline = dai.Pipeline()
         self.ctrl_names = {}
@@ -89,7 +94,7 @@ class LedStereo:
         ctrl.setManualExposure(us, iso)
         for q in self.q_ctrl.values():
             q.send(ctrl)
-        for _ in range(6):   # 反映されるまで数フレーム捨てる
+        for _ in range(25):  # センサーに反映されるまでフレームを捨てる
             self.frames()
 
     def marker_mode(self):
@@ -124,7 +129,8 @@ class LedStereo:
         _, th = cv2.threshold(img, self.threshold, 255, cv2.THRESH_BINARY)
         n, _, stats, cent = cv2.connectedComponentsWithStats(th)
         blobs = [(float(cent[i][0]), float(cent[i][1]), int(stats[i, cv2.CC_STAT_AREA]))
-                 for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= self.min_area]
+                 for i in range(1, n)
+                 if self.min_area <= stats[i, cv2.CC_STAT_AREA] <= self.max_area]
         blobs.sort(key=lambda b: -b[2])
         return blobs[:limit]
 
@@ -159,7 +165,7 @@ class LedStereo:
         if not bls or not brs:
             return None, (bls, brs)
 
-        best, best_score = None, None
+        cand = []
         for bl in bls:
             for br in brs:
                 X, err = self.triangulate(bl, br)
@@ -169,13 +175,15 @@ class LedStereo:
                     w = self.R_world @ (X - self.t_ref)
                     if w[2] < self.world_z_min or w[2] > self.world_z_max:
                         continue   # 床より下（反射）や高すぎるものは捨てる
-                score = err
-                if predict is not None:
-                    score += 20.0 * float(np.linalg.norm(X - predict))  # 直前の位置に近い方を優先
-                if best_score is None or score < best_score:
-                    best, best_score = X, score
-        if best is None:
+                dist = float(np.linalg.norm(X - predict)) if predict is not None else 0.0
+                score = err + 50.0 * dist       # 直前の位置に近い方を優先
+                cand.append((score, dist, X))
+
+        if not cand:
             return None, (bls, brs)
+        # まず直前の位置の近くだけで選ぶ。無ければ全体から選ぶ
+        near = [c for c in cand if c[1] <= self.gate_m] if predict is not None else []
+        best = min(near or cand, key=lambda c: c[0])[2]
         return best, (bls, brs)
         pl = cv2.undistortPoints(np.array([[[bl[0], bl[1]]]], np.float64), self.KL, self.DL)
         pr = cv2.undistortPoints(np.array([[[br[0], br[1]]]], np.float64), self.KR, self.DR)
@@ -267,14 +275,16 @@ class LedStereo:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exposure", type=int, default=500, help="LED を撮るときの露出 [us]")
+    ap.add_argument("--exposure", type=int, default=400, help="LED を撮るときの露出 [us]")
     ap.add_argument("--iso", type=int, default=400)
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
+    ap.add_argument("--max-area", type=int, default=300, help="これより大きい光は LED でないとみなす")
     ap.add_argument("--seconds", type=float, default=10)
     ap.add_argument("--no-check", action="store_true", help="ArUco との比較をしない")
     args = ap.parse_args()
 
-    tracker = LedStereo(led_exposure_us=args.exposure, led_iso=args.iso, threshold=args.threshold)
+    tracker = LedStereo(led_exposure_us=args.exposure, led_iso=args.iso,
+                        threshold=args.threshold, max_area=args.max_area)
     print(f"USB {tracker.usb}  基線長 {np.linalg.norm(tracker.T_lr)*100:.1f} cm")
     print("床の基準マーカー(id 0)で座標系を作ります…")
     if not tracker.calibrate_world():

@@ -81,9 +81,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="指令を送らない（確認用）")
     ap.add_argument("--bridge-port", default=None)
     # カメラ
-    ap.add_argument("--exposure", type=int, default=500, help="LED を撮る露出 [us]")
+    ap.add_argument("--exposure", type=int, default=400, help="LED を撮る露出 [us]")
     ap.add_argument("--iso", type=int, default=400)
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
+    ap.add_argument("--max-area", type=int, default=300,
+                    help="これより大きい光は LED でないとみなす（窓や白い紙の除外）")
     ap.add_argument("--fps", type=int, default=60)
     # 制御
     ap.add_argument("--kp", type=float, default=4.0, help="位置のずれ1mあたり何度傾けるか")
@@ -106,7 +108,7 @@ def main():
     args = ap.parse_args()
 
     tracker = LedStereo(fps=args.fps, led_exposure_us=args.exposure, led_iso=args.iso,
-                        threshold=args.threshold)
+                        threshold=args.threshold, max_area=args.max_area)
     print(f"カメラ USB {tracker.usb}  基線長 {np.linalg.norm(tracker.T_lr)*100:.1f} cm")
     print("床の基準マーカー(id 0)で座標系を作ります…")
     if not tracker.calibrate_world():
