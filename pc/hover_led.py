@@ -161,7 +161,7 @@ def main():
     last_draw = 0.0
     try:
         while True:
-            pos, blobs = tracker.world_position()
+            pos, blobs = tracker.world_position(pos_f)   # 直前の位置を渡し、反射との取り違えを防ぐ
             seen = pos is not None
             now = time.time() - t0
 

@@ -35,12 +35,15 @@ class LedStereo:
 
     def __init__(self, fps=60, led_exposure_us=500, led_iso=400,
                  marker_exposure_us=1000, marker_iso=400, threshold=200, min_area=3,
-                 z_min=0.3, z_max=4.0, max_reproj_px=2.0):
+                 z_min=0.3, z_max=4.0, max_reproj_px=2.0,
+                 world_z_min=-0.05, world_z_max=1.5):
         self.led_exp, self.led_iso = led_exposure_us, led_iso
         self.marker_exp, self.marker_iso = marker_exposure_us, marker_iso
         self.threshold, self.min_area = threshold, min_area
         self.z_min, self.z_max = z_min, z_max          # カメラから見た距離の範囲 [m]
         self.max_reproj_px = max_reproj_px             # 再投影のずれの上限 [px]
+        # 世界座標での高さの範囲。床より下は反射の鏡像なので捨てる
+        self.world_z_min, self.world_z_max = world_z_min, world_z_max
 
         pipeline = dai.Pipeline()
         self.ctrl_names = {}
@@ -113,23 +116,67 @@ class LedStereo:
         return left.getCvFrame(), right.getCvFrame()
 
     # ---- 光点の検出 ----
-    def find_blob(self, img):
-        """いちばん明るいかたまりの重心を返す。無ければ None"""
+    def find_blobs(self, img, limit=8):
+        """明るいかたまりを大きい順に返す [(x, y, 面積), ...]
+
+        床に映った反射も光点として写るため、1つに決め打ちせず候補を集める。
+        """
         _, th = cv2.threshold(img, self.threshold, 255, cv2.THRESH_BINARY)
         n, _, stats, cent = cv2.connectedComponentsWithStats(th)
-        best, best_area = None, 0
-        for i in range(1, n):
-            area = stats[i, cv2.CC_STAT_AREA]
-            if area >= self.min_area and area > best_area:
-                best, best_area = cent[i], area
-        return (None if best is None else (float(best[0]), float(best[1]), int(best_area)))
+        blobs = [(float(cent[i][0]), float(cent[i][1]), int(stats[i, cv2.CC_STAT_AREA]))
+                 for i in range(1, n) if stats[i, cv2.CC_STAT_AREA] >= self.min_area]
+        blobs.sort(key=lambda b: -b[2])
+        return blobs[:limit]
 
-    def led_position(self):
-        """LED の3次元位置（左カメラ基準）[m]。見つからなければ None"""
+    def triangulate(self, bl, br):
+        """左右の光点1組から3次元位置と再投影のずれを返す"""
+        pl = cv2.undistortPoints(np.array([[[bl[0], bl[1]]]], np.float64), self.KL, self.DL)
+        pr = cv2.undistortPoints(np.array([[[br[0], br[1]]]], np.float64), self.KR, self.DR)
+        X = cv2.triangulatePoints(self.P1, self.P2, pl, pr)
+        if abs(X[3]) < 1e-9:
+            return None, None
+        X = (X[:3] / X[3]).ravel()
+        if not (self.z_min < X[2] < self.z_max):
+            return None, None
+        rep_l, _ = cv2.projectPoints(X.reshape(1, 3), np.zeros(3), np.zeros(3), self.KL, self.DL)
+        rvec, _ = cv2.Rodrigues(self.R_lr)
+        rep_r, _ = cv2.projectPoints(X.reshape(1, 3), rvec, self.T_lr, self.KR, self.DR)
+        err = max(np.linalg.norm(rep_l.ravel() - np.array(bl[:2])),
+                  np.linalg.norm(rep_r.ravel() - np.array(br[:2])))
+        return X, float(err)
+
+    def led_position(self, predict=None):
+        """LED の3次元位置（左カメラ基準）[m]。見つからなければ None
+
+        左右の光点のすべての組み合わせを調べ、
+          * 再投影のずれが小さい
+          * 世界座標で床より上にある（反射の鏡像を除く）
+          * 直前の位置に近い
+        ものを選ぶ。
+        """
         left, right = self.frames()
-        bl, br = self.find_blob(left), self.find_blob(right)
-        if bl is None or br is None:
-            return None, (bl, br)
+        bls, brs = self.find_blobs(left), self.find_blobs(right)
+        if not bls or not brs:
+            return None, (bls, brs)
+
+        best, best_score = None, None
+        for bl in bls:
+            for br in brs:
+                X, err = self.triangulate(bl, br)
+                if X is None or err > self.max_reproj_px:
+                    continue
+                if self.R_world is not None:
+                    w = self.R_world @ (X - self.t_ref)
+                    if w[2] < self.world_z_min or w[2] > self.world_z_max:
+                        continue   # 床より下（反射）や高すぎるものは捨てる
+                score = err
+                if predict is not None:
+                    score += 20.0 * float(np.linalg.norm(X - predict))  # 直前の位置に近い方を優先
+                if best_score is None or score < best_score:
+                    best, best_score = X, score
+        if best is None:
+            return None, (bls, brs)
+        return best, (bls, brs)
         pl = cv2.undistortPoints(np.array([[[bl[0], bl[1]]]], np.float64), self.KL, self.DL)
         pr = cv2.undistortPoints(np.array([[[br[0], br[1]]]], np.float64), self.KR, self.DR)
         X = cv2.triangulatePoints(self.P1, self.P2, pl, pr)
@@ -200,9 +247,16 @@ class LedStereo:
             return pos, float(np.degrees(np.arctan2(Rw[1, 0], Rw[0, 0])))
         return None, None
 
-    def world_position(self):
-        """LED の世界座標 [m]。見つからなければ None"""
-        X, blobs = self.led_position()
+    def world_position(self, prev_world=None):
+        """LED の世界座標 [m]。見つからなければ None
+
+        prev_world を渡すと、その位置に近い候補を優先する（反射との取り違え防止）。
+        """
+        predict = None
+        if prev_world is not None:
+            # 直前の世界座標をカメラ座標へ戻して予測とする
+            predict = self.R_world.T @ np.asarray(prev_world) + self.t_ref
+        X, blobs = self.led_position(predict)
         if X is None:
             return None, blobs
         return self.R_world @ (X - self.t_ref), blobs
@@ -240,15 +294,17 @@ def main():
     print("\nLED で追跡します（Ctrl-C で終了）")
     t0 = time.time()
     samples = []
+    prev = None
     try:
         while time.time() - t0 < args.seconds:
-            pos, blobs = tracker.world_position()
+            pos, blobs = tracker.world_position(prev)
             if pos is None:
-                sys.stdout.write(f"\r光点が見つかりません {blobs}      ")
+                sys.stdout.write(f"\r光点なし（左{len(blobs[0])}個 右{len(blobs[1])}個）      ")
             else:
+                prev = pos
                 samples.append(pos)
                 sys.stdout.write(f"\rx{pos[0]:+.3f} y{pos[1]:+.3f} z{pos[2]:+.3f} m  "
-                                 f"（左{blobs[0][2]}px 右{blobs[1][2]}px）      ")
+                                 f"（候補 左{len(blobs[0])}個 右{len(blobs[1])}個）      ")
             sys.stdout.flush()
     except KeyboardInterrupt:
         pass
