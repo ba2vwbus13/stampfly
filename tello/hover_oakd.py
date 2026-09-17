@@ -27,6 +27,7 @@
 """
 
 import argparse
+import atexit
 import csv
 import json
 import logging
@@ -64,6 +65,8 @@ class Tracker(threading.Thread):
         self.sample = None        # (撮影時刻 time.time() 基準, pos[3], heading_deg)
         self.fps = 0.0
         self.pixel = None         # 映像内のマーカー中心（0〜1）
+        self.K = None
+        self.last_frame = 0.0     # 最後に映像が届いた時刻（マーカーの有無に関係なく）
         self.error = None
         self.crashes = 0          # 途中で落ちて開き直した回数
         self.down = False         # 開き直している最中
@@ -92,6 +95,7 @@ class Tracker(threading.Thread):
             calib = device.readCalibration()
             K = np.array(calib.getCameraIntrinsics(dai.CameraBoardSocket.CAM_A, width, height))
             dist = np.array(calib.getDistortionCoefficients(dai.CameraBoardSocket.CAM_A))[:8]
+            self.K = K
             self.usb = str(device.getUsbSpeed())
             q = device.getOutputQueue("video", 1, blocking=False)
             R_world = self.R_ref.T
@@ -102,6 +106,7 @@ class Tracker(threading.Thread):
             while not self.stop:
                 pkt = latest(q)
                 latency = (dai.Clock.now() - pkt.getTimestamp()).total_seconds()
+                self.last_frame = time.time()
                 gray = pkt.getFrame()[:height, :]
                 poses = detect_poses(detector, gray, K, dist, self.sizes, prev_R)
                 n += 1
@@ -147,6 +152,20 @@ def average_position(tracker, seconds):
     return np.mean(pts, axis=0), float(np.degrees(np.arctan2(np.sin(h).mean(), np.cos(h).mean())))
 
 
+def image_ratio(tracker, p_world):
+    """世界座標の点が映像のどこに写るか（横, 縦、0〜1）"""
+    pc = tracker.R_ref @ np.asarray(p_world) + tracker.t_ref
+    x = tracker.K @ pc
+    return x[0] / x[2] / 1920, x[1] / x[2] / 1080
+
+
+def center_on_plane(tracker, z):
+    """高さ z の水平面で、映像の中央に写る点（世界座標）"""
+    cam = tracker.R_ref.T @ (-tracker.t_ref)
+    ray = tracker.R_ref.T @ np.array([0.0, 0.0, 1.0])
+    return cam + (z - cam[2]) / ray[2] * ray
+
+
 def to_body(vx, vy, fwd_deg):
     """世界座標の速度 → Tello の (右, 前)
 
@@ -185,6 +204,10 @@ def main():
     tracker.ready.wait(20)
     if tracker.error and not tracker.is_alive():
         sys.exit(f"OAK-D を開けません: {tracker.error}")
+    def close_camera():            # 途中で終わってもカメラを正しく閉じる（閉じないと OAK-D が異常終了する）
+        tracker.stop = True
+        tracker.join(timeout=3)
+    atexit.register(close_camera)
     print(f"OAK-D: USB {tracker.usb}  座標系 {tracker.calib_created}")
     if tracker.usb.endswith("HIGH"):
         print("警告: USB 2 接続。遅延が大きいので USB 3 に挿し直すこと")
@@ -194,10 +217,16 @@ def main():
         sys.exit(f"マーカー id {args.marker_id} が見えません。Tello の置き場所を確認してください")
     ground, _ = average_position(tracker, 1.0)
     target = ground[:2].copy()
-    u, v = tracker.pixel
-    print(f"映像内の位置: 横 {u * 100:.0f}%  縦 {v * 100:.0f}%（中央は 50%）")
+    # カメラは真下を向いていないので、浮くと映像の中で位置がずれる。
+    # 地上ではなく「ホバリング高さでどこに写るか」で置き場所を判定する
+    z_hover = ground[2] + args.height / 100.0
+    u, v = image_ratio(tracker, [ground[0], ground[1], z_hover])
+    print(f"ホバリング時の映像内の位置（予測）: 横 {u * 100:.0f}%  縦 {v * 100:.0f}%（中央は 50%）")
     if not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7):
-        sys.exit("Tello が映像の端に寄っています。浮くと画面外に出るので、中央に置き直してください")
+        c = center_on_plane(tracker, z_hover)
+        sys.exit(f"このままだと浮いたときに画面の外へ出ます。Tello を動かしてください:\n"
+                 f"  x 方向に {(c[0] - ground[0]) * 100:+.0f}cm、y 方向に {(c[1] - ground[1]) * 100:+.0f}cm"
+                 f"（基準マーカーの矢印の向きが +）")
     print(f"離陸地点 x{ground[0]:+.3f} y{ground[1]:+.3f} z{ground[2]:+.3f} m → ここを目標にします")
 
     # --- Tello ---
@@ -214,7 +243,7 @@ def main():
         log_file = open(pathlib.Path(args.log).expanduser(), "w", newline="")
         writer = csv.writer(log_file)
         writer.writerow(["t_s", "phase", "x_m", "y_m", "z_m", "head_deg", "age_ms",
-                         "err_x_m", "err_y_m", "cmd_right", "cmd_fwd", "tof_cm", "bat"])
+                         "err_x_m", "err_y_m", "cmd_right", "cmd_fwd", "tof_cm", "bat", "cam_fps"])
 
     t_start = time.time()
     reason = "時間終了"
@@ -275,6 +304,7 @@ def main():
             now = time.time()
             s = tracker.sample
             age = now - s[0] if s is not None else 99.0
+            cam_down = tracker.down or now - tracker.last_frame > 1.0   # 映像そのものが止まっている
             cmd_r = cmd_f = 0
             err = np.array([np.nan, np.nan])
             if age < 0.3:
@@ -291,8 +321,8 @@ def main():
                     cmd_r = int(np.clip(right, -args.max_cmd, args.max_cmd))
                     cmd_f = int(np.clip(fwd, -args.max_cmd, args.max_cmd))
                 stats.append(dist_err)
-            elif now - last_ok > (args.camera_down_land if tracker.down else args.lost_land):
-                reason = (f"カメラが復帰しない（{now - last_ok:.1f} 秒）" if tracker.down
+            elif now - last_ok > (args.camera_down_land if cam_down else args.lost_land):
+                reason = (f"カメラが復帰しない（{now - last_ok:.1f} 秒）" if cam_down
                           else f"マーカーを {now - last_ok:.1f} 秒見失った")
                 break
             tello.send_rc_control(cmd_r, cmd_f, 0, 0)
@@ -303,14 +333,14 @@ def main():
                 writer.writerow([f"{now - t_start:.2f}", "ctrl", *(f"{v:.4f}" for v in p),
                                  f"{s[2]:.1f}" if s is not None else "", f"{age * 1000:.0f}",
                                  f"{err[0]:.4f}", f"{err[1]:.4f}", cmd_r, cmd_f,
-                                 st.get("tof", 0), st.get("bat", 0)])
+                                 st.get("tof", 0), st.get("bat", 0), f"{tracker.fps:.0f}"])
             if now - t0 > next_print:
                 next_print = now - t0 + 0.5
                 if age < 0.3:
                     sys.stdout.write(f"\r{now - t0:5.1f}s  ずれ x{err[0] * 100:+5.1f} y{err[1] * 100:+5.1f}cm"
                                      f"  指令 右{cmd_r:+3d} 前{cmd_f:+3d}  カメラ{tracker.fps:3.0f}fps   ")
                 else:
-                    what = "カメラを開き直し中" if tracker.down else "マーカーを見失い中"
+                    what = "カメラの映像が止まっている" if cam_down else "マーカーを見失い中（画面外？）"
                     sys.stdout.write(f"\r{now - t0:5.1f}s  {what}（指令0）"
                                      f"                          ")
                 sys.stdout.flush()
