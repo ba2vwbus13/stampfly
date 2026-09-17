@@ -92,10 +92,11 @@ def main():
                     help="これより大きい光は LED でないとみなす（窓や白い紙の除外）")
     ap.add_argument("--fps", type=int, default=60)
     # 制御
-    ap.add_argument("--kp", type=float, default=4.0, help="位置のずれ1mあたり何度傾けるか")
-    ap.add_argument("--ki", type=float, default=0.5)
-    ap.add_argument("--kd", type=float, default=4.0, help="速度1m/sあたり何度戻すか")
-    ap.add_argument("--max-tilt", type=float, default=4.0, help="傾ける角度の上限 [deg]")
+    ap.add_argument("--kp", type=float, default=8.0, help="位置のずれ1mあたり何度傾けるか")
+    ap.add_argument("--ki", type=float, default=2.0,
+                    help="機体が持つ傾きの偏りを打ち消す項。小さいと流され続ける")
+    ap.add_argument("--kd", type=float, default=6.0, help="速度1m/sあたり何度戻すか")
+    ap.add_argument("--max-tilt", type=float, default=8.0, help="傾ける角度の上限 [deg]")
     # 高さ（手動高度モードでは PC が推力そのものを決める）
     ap.add_argument("--alt-mode", choices=("manual", "auto"), default="manual",
                     help="manual: 高さもPCが制御しLEDは黄色のまま（推奨）。"
@@ -103,7 +104,7 @@ def main():
     ap.add_argument("--hover-thr", type=float, default=0.41,
                     help="ホバリングに必要なスロットル（電圧で変わる。3.8Vで約0.41）")
     ap.add_argument("--kz", type=float, default=0.6, help="高さのずれ1mあたりのスロットル量")
-    ap.add_argument("--kvz", type=float, default=0.25, help="上下の速度に対するブレーキ")
+    ap.add_argument("--kvz", type=float, default=0.35, help="上下の速度に対するブレーキ")
     ap.add_argument("--thr-min", type=float, default=0.25)
     ap.add_argument("--thr-max", type=float, default=0.60)
     ap.add_argument("--ramp", type=float, default=1.5, help="離陸時にスロットルを上げる時間 [s]")
