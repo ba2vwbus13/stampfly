@@ -107,7 +107,10 @@ def main():
     ap.add_argument("--kvz", type=float, default=0.35, help="上下の速度に対するブレーキ")
     ap.add_argument("--thr-min", type=float, default=0.25)
     ap.add_argument("--thr-max", type=float, default=0.60)
-    ap.add_argument("--ramp", type=float, default=1.5, help="離陸時にスロットルを上げる時間 [s]")
+    ap.add_argument("--thr-slew", type=float, default=1.5,
+                    help="スロットルの変化の上限 [1/秒]。急な推力変化を防ぐ")
+    ap.add_argument("--takeoff-thr", type=float, default=0.75,
+                    help="離陸時の初期スロットル（ホバリング値に対する割合）")
     ap.add_argument("--target-z", type=float, default=0.25, help="目標高度 [m]（LEDの高さ基準）")
     ap.add_argument("--slew", type=float, default=0.05, help="指令の1フレームあたりの変化上限")
     ap.add_argument("--settle", type=float, default=2.0, help="離陸してから制御を始めるまで [s]")
@@ -170,6 +173,8 @@ def main():
     rx = ""
 
     pos_f = None
+    thr_prev = 0.0
+    t_loop = time.time()
     vel = np.zeros(3)
     t_prev = None
     last_seen = time.time()
@@ -213,6 +218,9 @@ def main():
             if telem.get("alt") is not None and time.time() - telem.get("t_recv", 0) < 1.0:
                 expect_z = telem["alt"] + args.led_offset_z
             pos, blobs = tracker.world_position(pos_f, expect_z, args.z_tol)
+            now_clock = time.time()
+            dt_real = min(0.1, max(1e-3, now_clock - t_loop))
+            t_loop = now_clock
             seen = pos is not None
             now = time.time() - t0
 
@@ -298,16 +306,19 @@ def main():
                 if alt_mode == ALT_MANUAL:
                     # ホバリングに必要な分を土台にして、ずれと上下の速度で補正する
                     thr = args.hover_thr + pid_z.update(target[2] - pos_f[2], vel[2], dt)
-                    if t_takeoff is not None:   # 離陸直後はゆっくり立ち上げる
-                        ramp = min(1.0, (time.time() - t_takeoff) / max(args.ramp, 1e-3))
-                        thr *= ramp
-                    thr = float(np.clip(thr, 0.0 if not flying else args.thr_min, args.thr_max))
+                    thr = float(np.clip(thr, args.thr_min if flying else 0.0, args.thr_max))
+                    # 急に全開にならないよう、変化の速さだけ制限する
+                    # （0から立ち上げると浮くまでに時間がかかりすぎるので、
+                    #   離陸時はホバリング値の手前から始める）
+                    step = args.thr_slew * dt_real
+                    thr = float(np.clip(thr, thr_prev - step, thr_prev + step))
                 else:
                     thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
 
             ail = float(np.clip(ail, ail_prev - args.slew, ail_prev + args.slew))
             ele = float(np.clip(ele, ele_prev - args.slew, ele_prev + args.slew))
             ail_prev, ele_prev = ail, ele
+            thr_prev = thr
 
             # ---- 送信 ----
             if ser is not None and transmitting and not args.dry_run:
@@ -353,6 +364,10 @@ def main():
                                 if drone_flying != flying:
                                     flying = drone_flying
                                     t_takeoff = time.time() if flying else None
+                                    if flying:
+                                        thr_prev = args.hover_thr * args.takeoff_thr
+                                    else:
+                                        thr_prev = 0.0
                                     if flying and yaw_zero is None:
                                         # 測れなかった場合のみ、離陸時の向きを 0 とみなす
                                         yaw_zero = args.yaw_sign * telem["yaw"]
