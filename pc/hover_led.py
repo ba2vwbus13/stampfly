@@ -156,7 +156,9 @@ def main():
     if interactive:
         tty.setcbreak(sys.stdin.fileno())
     keys = start_key_reader() if interactive else queue_mod.Queue()
-    print("機体の前を床マーカーの赤い矢印(+x)に向けて置き、c キーで向きの基準を取ってください")
+    print(f"キーボード入力: {'有効' if interactive else '無効（M5GOのボタンで操作してください）'}")
+    print("向きの基準は、機体を +x に向けて離陸させれば自動で取れます"
+          "（c キー、または M5GO の B ボタンでも取れます）")
     print("スペース=離陸/着陸  wasd=目標移動  rf=目標高度  h=その場  z=停止  Ctrl-C=終了")
 
     t0 = time.time()
@@ -264,7 +266,20 @@ def main():
                     rx += data
                     while "\n" in rx:
                         line, rx = rx.split("\n", 1)
-                        if line.startswith("T,"):
+                        if line.startswith("#BTN,"):
+                            btn = line.strip().split(",")[-1]
+                            if btn == "B":
+                                # 飛行前: 向きの基準を取る / 飛行中: いまの位置を目標にする
+                                if not flying and telem.get("yaw") is not None:
+                                    yaw_zero = args.yaw_sign * telem["yaw"]
+                                    stop_reason = "向きの基準を取りました(Bボタン)"
+                                elif flying and pos_f is not None:
+                                    target = pos_f.copy()
+                                    stop_reason = "その場を目標にしました(Bボタン)"
+                            elif btn == "C":
+                                transmitting = False
+                                stop_reason = "M5GOのCボタンで停止"
+                        elif line.startswith("T,"):
                             p = line.strip().split(",")
                             if len(p) >= 13:
                                 telem = {"yaw": float(p[4]), "v": float(p[5]),

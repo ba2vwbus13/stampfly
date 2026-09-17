@@ -26,6 +26,8 @@
 //
 // M5GO が返す行:
 //   S,<pc_ok>,<sent>,<recv>,<state>
+//   #BTN,A / #BTN,B / #BTN,C   M5GO のボタンが押されたことを PC に知らせる
+//     （キーボードが使えない環境でも PC 側を操作できるようにするため）
 //   T,<time>,<roll>,<pitch>,<yaw>,<voltage>,<altitude>,<mode>,<alt_flag>,<front_mm>,<thrust>,<duty_FL>,<duty_RR>
 //   R,<roll_ref>,<pitch_ref>  機体が受け取った指令から作った目標角度[deg]。指令の向きの確認用
 //     duty_FL は前左、duty_RR は後右のモーター出力（0〜1）。対角の2つだけ機体が送ってくる。
@@ -300,6 +302,10 @@ void loop() {
             line += c;
         }
     }
+
+    if (M5.BtnA.wasPressed()) Serial.println("#BTN,A");
+    if (M5.BtnB.wasPressed()) Serial.println("#BTN,B");
+    if (M5.BtnC.wasPressed()) Serial.println("#BTN,C");
 
     if (M5.BtnA.wasPressed()) {          // 離陸 / 着陸
         arm_until    = millis() + ARM_PULSE_MS;
