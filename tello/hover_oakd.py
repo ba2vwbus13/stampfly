@@ -10,7 +10,7 @@
 
 流れ:
     1. 離陸し、下向きToFで --height まで降りる
-    2. 前に20cm動いて戻り、その移動をカメラで見て「機体の前方向」を世界座標で実測する
+    2. 少し（8cm）前に動き、その移動をカメラで見て「機体の前方向」を世界座標で実測する
        （StampFly では向きの思い込みが -90度ずれていて暴走した。その対策）
     3. 離陸地点の真上へ戻るように、水平の速度指令を出し続ける
        高さは Tello 自身の高度維持に任せる
@@ -28,6 +28,7 @@
 import argparse
 import csv
 import json
+import logging
 import pathlib
 import sys
 import threading
@@ -37,6 +38,8 @@ import cv2
 import depthai as dai
 import numpy as np
 from djitellopy import Tello
+
+Tello.LOGGER.setLevel(logging.WARNING)   # 送信のたびに出る INFO を止める
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "oakd"))
@@ -59,6 +62,7 @@ class Tracker(threading.Thread):
         self.iso = iso
         self.sample = None        # (撮影時刻 time.time() 基準, pos[3], heading_deg)
         self.fps = 0.0
+        self.pixel = None         # 映像内のマーカー中心（0〜1）
         self.error = None
         self.ready = threading.Event()
         self.stop = False
@@ -94,7 +98,8 @@ class Tracker(threading.Thread):
                     n, t_fps = 0, time.time()
                 if self.marker_id not in poses:
                     continue
-                R_d, t_d, _, _ = poses[self.marker_id]
+                R_d, t_d, _, corners = poses[self.marker_id]
+                self.pixel = corners.reshape(-1, 2).mean(axis=0) / (width, height)  # 0〜1
                 pos = R_world @ (t_d - self.t_ref)
                 R_dw = R_world @ R_d
                 head = float(np.degrees(np.arctan2(R_dw[1, 0], R_dw[0, 0])))
@@ -151,6 +156,7 @@ def main():
     ap.add_argument("--deadband", type=float, default=0.02, help="これ以内のずれは直さない [m]")
     ap.add_argument("--fence", type=float, default=0.5, help="目標からこれ以上離れたら着陸 [m]")
     ap.add_argument("--lost-land", type=float, default=2.0, help="これ以上見失ったら着陸 [s]")
+    ap.add_argument("--probe-cmd", type=int, default=20, help="向きを測るときの前進指令（rc）")
     ap.add_argument("--marker-id", type=int, default=1)
     ap.add_argument("--marker-cm", type=float, default=4.0)
     ap.add_argument("--exposure", type=float, default=6.0, help="手動露出 [ms]")
@@ -174,6 +180,10 @@ def main():
         sys.exit(f"マーカー id {args.marker_id} が見えません。Tello の置き場所を確認してください")
     ground, _ = average_position(tracker, 1.0)
     target = ground[:2].copy()
+    u, v = tracker.pixel
+    print(f"映像内の位置: 横 {u * 100:.0f}%  縦 {v * 100:.0f}%（中央は 50%）")
+    if not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7):
+        sys.exit("Tello が映像の端に寄っています。浮くと画面外に出るので、中央に置き直してください")
     print(f"離陸地点 x{ground[0]:+.3f} y{ground[1]:+.3f} z{ground[2]:+.3f} m → ここを目標にします")
 
     # --- Tello ---
@@ -212,25 +222,34 @@ def main():
         time.sleep(1.0)
 
         # 2. 前方向を実測する
-        print("前に20cm動いて戻り、機体の向きを測ります")
-        p0, head0 = average_position(tracker, 1.0)
+        #    move_forward(20) だと画面の外へ出ることがあったので、カメラで見ながら
+        #    ゆっくり前へ押し、8cm 動いた時点で止める（戻りは位置制御に任せる）
+        print("少し前に動かして、機体の向きを測ります")
+        p0, _ = average_position(tracker, 1.0)
         if p0 is None:
             raise RuntimeError("浮いた状態でマーカーが見えません（カメラの画面外に出ていないか確認）")
-        tello.move_forward(20)
-        time.sleep(0.5)
-        p1, head1 = average_position(tracker, 1.0)
-        if p1 is None:
-            raise RuntimeError("前進後にマーカーが見えません")
-        d = p1[:2] - p0[:2]
+        last = None
+        t_push = time.time()
+        while time.time() - t_push < 2.0:
+            tello.send_rc_control(0, args.probe_cmd, 0, 0)
+            s = tracker.sample
+            if s is not None and time.time() - s[0] < 0.2:
+                last = s
+                if np.linalg.norm(s[1][:2] - p0[:2]) >= 0.08:
+                    break
+            time.sleep(0.05)
+        tello.send_rc_control(0, 0, 0, 0)
+        if last is None:
+            raise RuntimeError("前に動かしている間にマーカーを見失いました")
+        d = last[1][:2] - p0[:2]
         dist = float(np.linalg.norm(d))
         fwd_world = float(np.degrees(np.arctan2(d[1], d[0])))
-        offset = wrap_deg(fwd_world - head1)   # マーカーの向き → 機体の前方向
+        offset = wrap_deg(fwd_world - last[2])   # マーカーの向き → 機体の前方向
         print(f"  移動 {dist * 100:.1f}cm  前方向 {fwd_world:+.1f}度  "
               f"マーカーとの差 {offset:+.1f}度")
-        if not 0.10 <= dist <= 0.35:
-            raise RuntimeError(f"移動量 {dist * 100:.1f}cm が 20cm からかけ離れています。"
-                               f"マーカーの大きさ(--marker-cm)を確認してください")
-        tello.move_back(20)
+        if dist < 0.04:
+            raise RuntimeError(f"移動量 {dist * 100:.1f}cm が小さすぎて向きを決められません"
+                               f"（--probe-cmd を大きくする）")
         time.sleep(0.5)
 
         # 3. 位置制御
@@ -292,6 +311,7 @@ def main():
         except Exception as e:
             print(f"着陸の指令に失敗: {e}")
         tracker.stop = True
+        tracker.join(timeout=3)     # カメラを閉じてから終わる（終了時の異常終了を防ぐ）
         if log_file:
             log_file.close()
         tello.end()
