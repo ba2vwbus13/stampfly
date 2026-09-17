@@ -43,7 +43,7 @@ class LedStereo:
     def __init__(self, fps=60, led_exposure_us=700, led_iso=400,
                  marker_exposure_us=1000, marker_iso=400, threshold=200, min_area=3, max_area=300,
                  z_min=0.3, z_max=4.0, max_reproj_px=2.0,
-                 world_z_min=-0.05, world_z_max=1.5, gate_m=0.25):
+                 world_z_min=-0.05, world_z_max=1.5, gate_m=0.25, z_reject=0.6):
         self.led_exp, self.led_iso = led_exposure_us, led_iso
         self.marker_exp, self.marker_iso = marker_exposure_us, marker_iso
         self.threshold, self.min_area = threshold, min_area
@@ -56,6 +56,8 @@ class LedStereo:
         # 一度見つけたら、その近く(gate_m 以内)の候補だけを見る。
         # 近くに何も無ければ全体から探し直す
         self.gate_m = gate_m
+        # 報告された高度からこれ以上離れた光は捨てる（緩めの保険）
+        self.z_reject = z_reject
 
         pipeline = dai.Pipeline()
         self.ctrl_names = {}
@@ -177,6 +179,7 @@ class LedStereo:
             return None, (bls, brs)
 
         cand = []
+        z_err = 0.0
         for bl in bls:
             for br in brs:
                 X, err = self.triangulate(bl, br)
@@ -186,10 +189,16 @@ class LedStereo:
                     w = self.R_world @ (X - self.t_ref)
                     if w[2] < self.world_z_min or w[2] > self.world_z_max:
                         continue   # 床より下（反射）や高すぎるものは捨てる
-                    if expect_z is not None and abs(w[2] - expect_z) > z_tol:
-                        continue   # 機体が報告している高度と合わない光は機体ではない
+                    # 機体が報告している高度から大きく外れた光だけを捨てる。
+                    # 離陸直後は報告値が先に上がり、実際の機体はまだ床の近くにいるので、
+                    # ここを厳しくすると本物の LED を捨ててしまう
+                    if expect_z is not None and abs(w[2] - expect_z) > self.z_reject:
+                        continue
+                    z_err = abs(w[2] - expect_z) if expect_z is not None else 0.0
                 dist = float(np.linalg.norm(X - predict)) if predict is not None else 0.0
-                score = err + 50.0 * dist       # 直前の位置に近い方を優先
+                # 直前の位置に近く、報告高度に近いものを優先する（どちらも「優先」であって
+                # 「必須」ではない。厳しくしすぎると本物を捨てる）
+                score = err + 50.0 * dist + 10.0 * z_err
                 cand.append((score, dist, X))
 
         if not cand:

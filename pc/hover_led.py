@@ -86,7 +86,7 @@ def main():
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
     ap.add_argument("--led-offset-z", type=float, default=0.05,
                     help="機体が報告する高度と LED の高さの差 [m]")
-    ap.add_argument("--z-tol", type=float, default=0.2,
+    ap.add_argument("--z-tol", type=float, default=0.6,
                     help="報告された高度からこれ以上離れた光は機体とみなさない [m]")
     ap.add_argument("--max-area", type=int, default=300,
                     help="これより大きい光は LED でないとみなす（窓や白い紙の除外）")
@@ -153,7 +153,7 @@ def main():
         log_file = open(args.log, "w", newline="")
         writer = csv.writer(log_file)
         writer.writerow(["t_s", "x", "y", "z", "head", "tx", "ty", "tz",
-                         "ail", "ele", "thr", "seen", "mode", "volt", "flying"])
+                         "ail", "ele", "thr", "seen", "mode", "volt", "flying", "nblob"])
 
     interactive = sys.stdin.isatty()
     old_term = termios.tcgetattr(sys.stdin) if interactive else None
@@ -329,7 +329,7 @@ def main():
                                 [f"{v:.3f}" for v in target] +
                                 [f"{ail:.3f}", f"{ele:.3f}", f"{thr:.3f}", int(seen),
                                  telem.get("mode", ""), f"{telem['v']:.2f}" if telem else "",
-                                 int(flying)])
+                                 int(flying), len(blobs[0]) if blobs else 0])
     except KeyboardInterrupt:
         pass
     finally:
