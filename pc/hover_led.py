@@ -53,6 +53,23 @@ from marker_common import wrap_deg  # noqa: E402
 from hover import PID, to_command, DEG_PER_STICK  # noqa: E402,F401
 
 ALT_AUTO, ALT_MANUAL = 4, 5
+
+
+def duty_of_stick(t):
+    """スロットル(0〜1) → モーターのデューティ。公式ファームと同じ式"""
+    return 4.13e-3 + 3.3 * t - 5.44 * t * t + 3.13 * t ** 3
+
+
+def hover_stick(voltage):
+    """その電圧でホバリングに必要なスロットル値
+
+    公式ファームの get_trim_duty() と同じ式で必要なデューティを求め、
+    上の多項式を逆に解く。電圧が下がるほど大きな値が必要になる
+    （3.9V:0.36 → 3.8V:0.41 → 3.7V:0.49 → 3.6V:0.64）。
+    """
+    need = -0.2448 * float(voltage) + 1.5892
+    ts = np.linspace(0.0, 1.0, 1001)
+    return float(ts[int(np.argmin(np.abs(duty_of_stick(ts) - need)))])
 MODE_NAMES = {0: "INIT", 1: "CALIB", 2: "FLIGHT", 3: "PARKING",
               4: "LOG", 5: "LANDING", 6: "FLIP"}
 
@@ -103,12 +120,12 @@ def main():
     ap.add_argument("--alt-mode", choices=("manual", "auto"), default="manual",
                     help="manual: 高さもPCが制御しLEDは黄色のまま（推奨）。"
                          "auto: 機体任せ。LEDが暗い紫になり見失いやすい")
-    ap.add_argument("--hover-thr", type=float, default=0.41,
-                    help="ホバリングに必要なスロットル（電圧で変わる。3.8Vで約0.41）")
+    ap.add_argument("--hover-thr", type=float, default=None,
+                    help="ホバリングに必要なスロットル。省略時は電圧から自動計算する")
     ap.add_argument("--kz", type=float, default=0.6, help="高さのずれ1mあたりのスロットル量")
     ap.add_argument("--kvz", type=float, default=0.35, help="上下の速度に対するブレーキ")
     ap.add_argument("--thr-min", type=float, default=0.25)
-    ap.add_argument("--thr-max", type=float, default=0.60)
+    ap.add_argument("--thr-max", type=float, default=0.85)
     ap.add_argument("--thr-slew", type=float, default=1.5,
                     help="スロットルの変化の上限 [1/秒]。急な推力変化を防ぐ")
     ap.add_argument("--takeoff-thr", type=float, default=0.75,
@@ -306,8 +323,12 @@ def main():
                 ay = pid_y.update(err[1], vel[1], dt)
                 ail, ele = to_command(ax, ay, head if head is not None else 0.0, args.max_tilt)
                 if alt_mode == ALT_MANUAL:
-                    # ホバリングに必要な分を土台にして、ずれと上下の速度で補正する
-                    thr = args.hover_thr + pid_z.update(target[2] - pos_f[2], vel[2], dt)
+                    # ホバリングに必要な分を土台にして、ずれと上下の速度で補正する。
+                    # 土台は電圧から毎回計算する（モーターを回すと電圧が下がり、
+                    # 必要なスロットルが跳ね上がるため）
+                    base = (args.hover_thr if args.hover_thr is not None
+                            else hover_stick(telem.get("v", 3.8)))
+                    thr = base + pid_z.update(target[2] - pos_f[2], vel[2], dt)
                     thr = float(np.clip(thr, args.thr_min if flying else 0.0, args.thr_max))
                     # 急に全開にならないよう、変化の速さだけ制限する
                     # （0から立ち上げると浮くまでに時間がかかりすぎるので、
@@ -367,7 +388,9 @@ def main():
                                     flying = drone_flying
                                     t_takeoff = time.time() if flying else None
                                     if flying:
-                                        thr_prev = args.hover_thr * args.takeoff_thr
+                                        base0 = (args.hover_thr if args.hover_thr is not None
+                                                 else hover_stick(telem.get("v", 3.8)))
+                                        thr_prev = base0 * args.takeoff_thr
                                     else:
                                         thr_prev = 0.0
                                     if flying and yaw_zero is None:
