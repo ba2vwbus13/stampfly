@@ -112,6 +112,10 @@ def main():
     ap.add_argument("--slew", type=float, default=0.05, help="指令の1フレームあたりの変化上限")
     ap.add_argument("--settle", type=float, default=2.0, help="離陸してから制御を始めるまで [s]")
     # 向き
+    ap.add_argument("--marker-id", type=int, default=2, help="機体に貼ったマーカーのid（向きの測定用）")
+    ap.add_argument("--marker-size", type=float, default=2.8, help="機体のマーカーの一辺 [cm]")
+    ap.add_argument("--no-heading-calib", action="store_true",
+                    help="マーカーで向きを測らない（機体を+xに向けて置く前提にする）")
     ap.add_argument("--yaw-sign", type=float, default=-1.0,
                     help="機体のyawと世界座標の回転の向きの対応（-1 か 1）")
     # 安全
@@ -129,6 +133,15 @@ def main():
     print("床の基準マーカー(id 0)で座標系を作ります…")
     if not tracker.calibrate_world():
         sys.exit("基準マーカーが見つかりません。カメラに写っているか確認してください")
+    # 機体の向きをマーカーで測る（人の置き方に頼らない）
+    heading0 = None
+    if not args.no_heading_calib:
+        heading0 = tracker.marker_heading(args.marker_id, args.marker_size)
+        if heading0 is None:
+            print("注意: 機体のマーカーが見えず、向きを測れませんでした。"
+                  "機体を +x に向けて置いてから離陸してください")
+        else:
+            print(f"機体の向きを測定: {heading0:+.1f} 度（床マーカーの +x を 0 度とする）")
     tracker.led_mode()
     print("座標系ができました。LED 追跡に切り替えます")
 
@@ -317,12 +330,15 @@ def main():
                                 telem = {"yaw": float(p[4]), "v": float(p[5]),
                                          "alt": float(p[6]), "mode": int(p[7]),
                                          "t_recv": time.time()}
+                                if yaw_zero is None and heading0 is not None:
+                                    # 測った向きと機体のジャイロを対応づける
+                                    yaw_zero = args.yaw_sign * telem["yaw"] - heading0
                                 drone_flying = telem["mode"] in (2, 6)
                                 if drone_flying != flying:
                                     flying = drone_flying
                                     t_takeoff = time.time() if flying else None
                                     if flying and yaw_zero is None:
-                                        # 基準を取っていなければ離陸時の向きを 0 とする
+                                        # 測れなかった場合のみ、離陸時の向きを 0 とみなす
                                         yaw_zero = args.yaw_sign * telem["yaw"]
                                     if not flying:
                                         pid_x.reset()

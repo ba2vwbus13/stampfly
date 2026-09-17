@@ -34,7 +34,9 @@ import numpy as np
 from marker_common import average_rotation, make_detector, marker_object_points, solve_pose
 
 WIDTH, HEIGHT = 1280, 800
+COLOR_W, COLOR_H = 1920, 1080
 LEFT, RIGHT = dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_C
+COLOR = dai.CameraBoardSocket.CAM_A
 
 
 class LedStereo:
@@ -77,6 +79,20 @@ class LedStereo:
             xin.out.link(mono.inputControl)
             self.ctrl_names[name] = name + "_ctrl"
 
+        # 機体の向きを測るためのカラーカメラ（離陸前に1回使うだけ）
+        cam = pipeline.create(dai.node.ColorCamera)
+        cam.setBoardSocket(COLOR)
+        cam.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
+        cam.setVideoSize(COLOR_W, COLOR_H)
+        cam.setInterleaved(False)
+        cam.setFps(10)
+        cam.initialControl.setAutoExposureEnable()
+        xc = pipeline.create(dai.node.XLinkOut)
+        xc.setStreamName("color")
+        xc.input.setBlocking(False)
+        xc.input.setQueueSize(1)
+        cam.video.link(xc.input)
+
         self.device = dai.Device(pipeline)
         cal = self.device.readCalibration()
         self.KL = np.array(cal.getCameraIntrinsics(LEFT, WIDTH, HEIGHT))
@@ -93,6 +109,11 @@ class LedStereo:
         self.q_left = self.device.getOutputQueue("left", 1, blocking=False)
         self.q_right = self.device.getOutputQueue("right", 1, blocking=False)
         self.q_ctrl = {n: self.device.getInputQueue(c) for n, c in self.ctrl_names.items()}
+        self.q_color = self.device.getOutputQueue("color", 1, blocking=False)
+        self.KC = np.array(cal.getCameraIntrinsics(COLOR, COLOR_W, COLOR_H))
+        self.DC = np.array(cal.getDistortionCoefficients(COLOR))[:8]
+        # カラーカメラ座標 → 左カメラ座標 の回転
+        self.R_cl = np.array(cal.getCameraExtrinsics(COLOR, LEFT))[:3, :3]
         self.R_world = None
         self.t_ref = None
         self.usb = str(self.device.getUsbSpeed())
@@ -276,6 +297,34 @@ class LedStereo:
             Rw = self.R_world @ R
             return pos, float(np.degrees(np.arctan2(Rw[1, 0], Rw[0, 0])))
         return None, None
+
+    def marker_heading(self, marker_id=2, size_cm=2.8, tries=15):
+        """機体に貼ったマーカーをカラーカメラで見て、世界座標での向き[deg]を返す
+
+        「機体を +x に向けて置く」という人手の手順に頼らず、実際の向きを測る。
+        離陸前（地上にいてマーカーがよく見える間）に1回使う。
+        """
+        if self.R_world is None:
+            return None
+        detector = make_detector()
+        obj = marker_object_points(size_cm / 100.0)
+        for _ in range(tries):
+            pkt = self.q_color.get()
+            nv12 = pkt.getFrame()
+            gray = nv12[:COLOR_H, :]          # NV12 の輝度面
+            corners, ids, _ = detector.detectMarkers(gray)
+            if ids is None:
+                continue
+            for c, mid in zip(corners, ids.ravel()):
+                if int(mid) != marker_id:
+                    continue
+                rvec, tvec, _ = solve_pose(obj, c[0], self.KC, self.DC)
+                if rvec is None:
+                    continue
+                R, _ = cv2.Rodrigues(rvec)
+                Rw = self.R_world @ self.R_cl @ R      # カラー → 左 → 世界
+                return float(np.degrees(np.arctan2(Rw[1, 0], Rw[0, 0])))
+        return None
 
     def world_position(self, prev_world=None, expect_z=None, z_tol=0.2):
         """LED の世界座標 [m]。見つからなければ None
