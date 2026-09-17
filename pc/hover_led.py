@@ -50,7 +50,7 @@ from led_stereo import LedStereo  # noqa: E402
 from marker_common import wrap_deg  # noqa: E402
 from hover import PID, to_command, DEG_PER_STICK  # noqa: E402,F401
 
-ALT_AUTO = 4
+ALT_AUTO, ALT_MANUAL = 4, 5
 MODE_NAMES = {0: "INIT", 1: "CALIB", 2: "FLIGHT", 3: "PARKING",
               4: "LOG", 5: "LANDING", 6: "FLIP"}
 
@@ -96,8 +96,18 @@ def main():
     ap.add_argument("--ki", type=float, default=0.5)
     ap.add_argument("--kd", type=float, default=4.0, help="速度1m/sあたり何度戻すか")
     ap.add_argument("--max-tilt", type=float, default=4.0, help="傾ける角度の上限 [deg]")
-    ap.add_argument("--kz", type=float, default=1.5)
-    ap.add_argument("--target-z", type=float, default=0.3, help="目標高度 [m]（LEDの高さ基準）")
+    # 高さ（手動高度モードでは PC が推力そのものを決める）
+    ap.add_argument("--alt-mode", choices=("manual", "auto"), default="manual",
+                    help="manual: 高さもPCが制御しLEDは黄色のまま（推奨）。"
+                         "auto: 機体任せ。LEDが暗い紫になり見失いやすい")
+    ap.add_argument("--hover-thr", type=float, default=0.41,
+                    help="ホバリングに必要なスロットル（電圧で変わる。3.8Vで約0.41）")
+    ap.add_argument("--kz", type=float, default=0.6, help="高さのずれ1mあたりのスロットル量")
+    ap.add_argument("--kvz", type=float, default=0.25, help="上下の速度に対するブレーキ")
+    ap.add_argument("--thr-min", type=float, default=0.25)
+    ap.add_argument("--thr-max", type=float, default=0.60)
+    ap.add_argument("--ramp", type=float, default=1.5, help="離陸時にスロットルを上げる時間 [s]")
+    ap.add_argument("--target-z", type=float, default=0.25, help="目標高度 [m]（LEDの高さ基準）")
     ap.add_argument("--slew", type=float, default=0.05, help="指令の1フレームあたりの変化上限")
     ap.add_argument("--settle", type=float, default=2.0, help="離陸してから制御を始めるまで [s]")
     # 向き
@@ -113,6 +123,7 @@ def main():
 
     tracker = LedStereo(fps=args.fps, led_exposure_us=args.exposure, led_iso=args.iso,
                         threshold=args.threshold, max_area=args.max_area)
+    print(f"高度: {'PCが制御（LEDは黄色のまま）' if args.alt_mode == 'manual' else '機体任せ'}")
     print(f"カメラ USB {tracker.usb}  基線長 {np.linalg.norm(tracker.T_lr)*100:.1f} cm")
     print("床の基準マーカー(id 0)で座標系を作ります…")
     if not tracker.calibrate_world():
@@ -130,7 +141,9 @@ def main():
             raise
         print(f"中継機なしで続けます（{e}）")
 
+    alt_mode = ALT_MANUAL if args.alt_mode == "manual" else ALT_AUTO
     pid_x, pid_y = PID(args.kp, args.ki, args.kd), PID(args.kp, args.ki, args.kd)
+    pid_z = PID(args.kz, 0.15, args.kvz, i_limit=0.3)
     target = np.array([0.0, 0.0, args.target_z])
     flying = False
     transmitting = True
@@ -244,7 +257,9 @@ def main():
 
             # ---- 位置制御 ----
             ail = ele = thr = 0.0
-            settling = flying and t_takeoff is not None and (time.time() - t_takeoff) < args.settle
+            # 手動高度モードでは機体が自動で浮かないので、静定待ちはしない
+            settling = (alt_mode == ALT_AUTO and flying and t_takeoff is not None
+                        and (time.time() - t_takeoff) < args.settle)
             if pos_f is not None and not settling and lost_s < args.neutral_after:
                 if not flying:
                     pid_x.reset()
@@ -254,7 +269,15 @@ def main():
                 ax = pid_x.update(err[0], vel[0], dt)
                 ay = pid_y.update(err[1], vel[1], dt)
                 ail, ele = to_command(ax, ay, head if head is not None else 0.0, args.max_tilt)
-                thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
+                if alt_mode == ALT_MANUAL:
+                    # ホバリングに必要な分を土台にして、ずれと上下の速度で補正する
+                    thr = args.hover_thr + pid_z.update(target[2] - pos_f[2], vel[2], dt)
+                    if t_takeoff is not None:   # 離陸直後はゆっくり立ち上げる
+                        ramp = min(1.0, (time.time() - t_takeoff) / max(args.ramp, 1e-3))
+                        thr *= ramp
+                    thr = float(np.clip(thr, 0.0 if not flying else args.thr_min, args.thr_max))
+                else:
+                    thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
 
             ail = float(np.clip(ail, ail_prev - args.slew, ail_prev + args.slew))
             ele = float(np.clip(ele, ele_prev - args.slew, ele_prev + args.slew))
@@ -264,7 +287,7 @@ def main():
             if ser is not None and transmitting and not args.dry_run:
                 s_thr, s_ail, s_ele = (thr, ail, ele) if flying else (0.0, 0.0, 0.0)
                 ser.write(f"C,{s_thr:.3f},{s_ail:.3f},{s_ele:.3f},0,"
-                          f"{1 if arm_pulse else 0},0,0,{ALT_AUTO}\n".encode())
+                          f"{1 if arm_pulse else 0},0,0,{alt_mode}\n".encode())
             arm_pulse = False
 
             # ---- 機体からの返信 ----
@@ -303,6 +326,7 @@ def main():
                                     if not flying:
                                         pid_x.reset()
                                         pid_y.reset()
+                                        pid_z.reset()
                                     sys.stdout.write("\n★ 機体が" +
                                                      ("離陸しました\n" if flying else "着陸しました\n"))
 
@@ -337,7 +361,7 @@ def main():
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_term)
         if ser is not None:
             for _ in range(5):
-                ser.write(f"C,0,0,0,0,0,0,0,{ALT_AUTO}\n".encode())
+                ser.write(f"C,0,0,0,0,0,0,0,{alt_mode}\n".encode())
                 time.sleep(0.02)
             ser.close()
         tracker.close()
