@@ -21,6 +21,7 @@
 //     flip     : 1 で宙返り
 //     mode     : 0=角度制御, 1=角速度制御
 //     altmode  : 4=自動高度, 5=手動高度
+//   A              : 姿勢の基準をリセットする（機体が待機中のときだけ有効。ブザーが鳴る）
 //   P              : 状態を1行返す
 //
 // M5GO が返す行:
@@ -53,6 +54,7 @@ static uint8_t f_altmode = 4;   // 4 = 自動高度
 static uint8_t f_flip = 0;
 
 static uint32_t arm_until   = 0;  // この時刻まで arm を 1 にする
+static uint32_t ahrs_until  = 0;  // この時刻まで姿勢リセットの信号を出す
 static uint32_t last_pc_ms  = 0;
 static uint32_t sent_count  = 0;
 static uint32_t recv_count  = 0;
@@ -151,7 +153,7 @@ static void send_packet() {
     d[20] = f_flip;
     d[21] = f_mode;
     d[22] = f_altmode;
-    d[23] = 0;  // AHRS リセット
+    d[23] = (millis() < ahrs_until) ? 1 : 0;  // 姿勢の基準をリセット
     uint8_t sum = 0;
     for (int i = 0; i < 24; i++) sum += d[i];
     d[24] = sum;
@@ -190,6 +192,9 @@ static void handle_line(const String &s) {
         f_altmode  = (uint8_t)(v[7] > 0 ? v[7] : 4);
         last_pc_ms = millis();
         transmitting = true;
+    } else if (s.startsWith("A")) {
+        ahrs_until = millis() + 300;
+        Serial.println("# AHRS reset requested");
     } else if (s.startsWith("P")) {
         Serial.printf("S,%d,%lu,%lu,%s\n", (millis() - last_pc_ms < PC_TIMEOUT_MS) ? 1 : 0,
                       sent_count, recv_count, transmitting ? "TX" : "STOP");
@@ -249,7 +254,7 @@ static void draw() {
     M5.Display.setTextColor(TFT_DARKGREY, TFT_BLACK);
     M5.Display.setTextSize(1);
     M5.Display.setCursor(10, 220);
-    M5.Display.print("A:takeoff/land   B:hover   C:stop(long=cut)");
+    M5.Display.print("A:takeoff/land  B:hover(long=level)  C:stop(long=cut)");
 }
 
 void setup() {
@@ -303,6 +308,12 @@ void loop() {
     }
     if (M5.BtnB.wasPressed()) {          // その場で止まる（スティックを中立に）
         f_throttle = f_aileron = f_elevator = f_rudder = 0;
+    }
+    if (M5.BtnB.pressedFor(1000)) {      // 長押し = 姿勢の基準をリセット
+        ahrs_until   = millis() + 300;
+        transmitting = true;
+        manual_mode  = true;
+        M5.Speaker.tone(3000, 150);
     }
     if (M5.BtnC.wasPressed()) {          // 送信停止 → 機体は自動着陸
         transmitting = false;

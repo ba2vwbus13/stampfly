@@ -15,6 +15,7 @@ PC → M5GO → StampFly の経路で 50Hz の指令を送り続ける。
     r / f     上昇 / 下降（自動高度モードでは目標高度の増減）
     x         すべて中立（その場で止まる）
     m         高度モードの切り替え（自動 ⇔ 手動）
+    c         姿勢の基準をリセット（水平な場所に置いて、待機中に押す。ブザーが鳴る）
     z         送信停止（機体は自動着陸する）
     Ctrl-C    終了（中立を送ってから切断）
 
@@ -106,6 +107,7 @@ def main():
     print(f"接続: {port}   スペース=離陸/着陸  wasd=移動  qe=旋回  rf=高度  x=中立  z=停止  Ctrl-C=終了")
 
     rx = ""
+    note = ""
     t_next = time.time()
     last_draw = 0.0
     now = 0.0
@@ -138,6 +140,9 @@ def main():
                         ax.set(0.0)
                 elif key == "m":
                     alt_mode = ALT_MANUAL if alt_mode == ALT_AUTO else ALT_AUTO
+                elif key == "c":
+                    ser.write(b"A\n")      # 姿勢の基準をリセット
+                    note = "姿勢リセットを送信"
                 elif key == "z":
                     transmitting = False
                 elif key == "\x03":
@@ -183,7 +188,7 @@ def main():
                         f"rud{rudder.get():+.2f} thr{throttle.get():+.2f} | "
                         f"FL{telem['fl']:.2f} RR{telem['rr']:.2f} "
                         f"{'AUTO' if alt_mode == ALT_AUTO else 'MAN '} "
-                        f"{'TX' if transmitting else '--'}")
+                        f"{'TX' if transmitting else '--'} {note}")
                 width = shutil.get_terminal_size((100, 24)).columns
                 sys.stdout.write("\r" + line[:width - 1] + "\033[K")
                 sys.stdout.flush()
