@@ -77,17 +77,21 @@ class PID:
         return self.kp * err + self.ki * self.i - self.kd * vel
 
 
-def to_command(ax_deg, ay_deg, head_deg, max_tilt, flip_roll=False, flip_pitch=False):
+def to_command(ax_deg, ay_deg, heading_deg, max_tilt, flip_roll=False, flip_pitch=False):
     """世界座標で「+x へ ax 度、+y へ ay 度 傾けたい」を、機体から見た指令に直す
 
-    機体は自分の向き（head）を向いているので、世界座標の要求を機体の前後左右へ回す。
-    戻り値: (aileron, elevator)  どちらも -1〜1
+    heading_deg は **機体の前方向** が世界の +x となす角度［度］（反時計回りが正）。
+      機体の前ベクトル = (cos h, sin h)
+      機体の右ベクトル = (sin h, -cos h)   ← 前を時計回りに90度回した向き
+    要求ベクトル (ax, ay) をこの2方向へ分解する。
+
+    戻り値: (aileron, elevator)  どちらも -1〜1。aileron は右が正、elevator は前が正
     """
-    h = np.radians(head_deg)
-    right_deg = ax_deg * np.cos(h) + ay_deg * np.sin(h)
-    fwd_deg = -ax_deg * np.sin(h) + ay_deg * np.cos(h)
-    right_deg = float(np.clip(right_deg, -max_tilt, max_tilt))
+    h = np.radians(heading_deg)
+    fwd_deg = ax_deg * np.cos(h) + ay_deg * np.sin(h)
+    right_deg = ax_deg * np.sin(h) - ay_deg * np.cos(h)
     fwd_deg = float(np.clip(fwd_deg, -max_tilt, max_tilt))
+    right_deg = float(np.clip(right_deg, -max_tilt, max_tilt))
     ail = right_deg / DEG_PER_STICK * (-1 if flip_roll else 1)
     ele = fwd_deg / DEG_PER_STICK * (-1 if flip_pitch else 1)
     return ail, ele
@@ -206,6 +210,9 @@ def main():
     ap.add_argument("--heading-gate", type=float, default=40.0,
                     help="これ以上離れた向きの値は無視する [deg]")
     ap.add_argument("--slew", type=float, default=0.05, help="指令の1フレームあたりの変化上限")
+    ap.add_argument("--yaw-offset", type=float, default=None,
+                    help="マーカーの向きと機体の前方向のずれ [deg]。"
+                         "省略時は world_calib.json の値、それも無ければ 0")
     ap.add_argument("--flip-roll", action="store_true", help="左右が逆に動くとき指定")
     ap.add_argument("--flip-pitch", action="store_true", help="前後が逆に動くとき指定")
     ap.add_argument("--gui", action="store_true", help="カメラ映像も表示する")
@@ -213,8 +220,14 @@ def main():
     ap.add_argument("--seconds", type=float, default=None, help="この秒数で自動終了（動作確認用）")
     args = ap.parse_args()
 
+    # マーカーの貼り付け角のずれ（機体の前方向とマーカーのX軸の差）
+    yaw_offset = args.yaw_offset
+    if yaw_offset is None:
+        yaw_offset = float(json_load(args.calib).get("yaw_offset", 0.0))
+
     tracker = Tracker(args)
-    print(f"カメラ USB {tracker.usb}  {tracker.width}x{tracker.height}@{args.fps}")
+    print(f"カメラ USB {tracker.usb}  {tracker.width}x{tracker.height}@{args.fps}  "
+          f"マーカー貼り付け角の補正 {yaw_offset:+.1f}度")
 
     # お試しモードでも、機体の状態を見るために受信だけは行う（送信はしない）
     ser = None
@@ -355,7 +368,7 @@ def main():
                 dt = max(1.0 / args.fps, 1e-3)
                 ax = pid_x.update(err[0], vel[0], dt)   # +x 方向へ動きたい量 [deg]
                 ay = pid_y.update(err[1], vel[1], dt)
-                ail, ele = to_command(ax, ay, head_est if head_est is not None else 0.0,
+                ail, ele = to_command(ax, ay, (head_est if head_est is not None else 0.0) - yaw_offset,
                                       args.max_tilt, args.flip_roll, args.flip_pitch)
                 thr = float(np.clip(args.kz * (target[2] - pos_f[2]), -0.5, 0.5))
             elif settling:
