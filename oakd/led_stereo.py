@@ -14,6 +14,13 @@ LED は点なので、機体がどれだけ傾いても見え方が変わらな�
   4. 基準マーカーの座標系へ変換する
 
 白黒カメラはグローバルシャッターなので、動いている機体でもぶれない。
+
+露出の目安（部屋の明るさで変わるので、飛ばす前に必ず確認する）:
+    このプログラムを10秒動かし、ばらつきが 10mm 以下になる露出を選ぶ。
+    左右の光点が1個ずつになるのが理想。10個も出るときは露出が長すぎる。
+      暗くした室内: 700us 付近
+      明るい室内  : 400us 付近（LEDが周囲の光に埋もれやすく、不安定）
+    明るい部屋ではカーテンを閉めるなどして暗くした方が確実。
 """
 
 import argparse
@@ -33,7 +40,7 @@ LEFT, RIGHT = dai.CameraBoardSocket.CAM_B, dai.CameraBoardSocket.CAM_C
 class LedStereo:
     """左右カメラで LED を追う"""
 
-    def __init__(self, fps=60, led_exposure_us=400, led_iso=400,
+    def __init__(self, fps=60, led_exposure_us=700, led_iso=400,
                  marker_exposure_us=1000, marker_iso=400, threshold=200, min_area=3, max_area=300,
                  z_min=0.3, z_max=4.0, max_reproj_px=2.0,
                  world_z_min=-0.05, world_z_max=1.5, gate_m=0.25):
@@ -151,14 +158,18 @@ class LedStereo:
                   np.linalg.norm(rep_r.ravel() - np.array(br[:2])))
         return X, float(err)
 
-    def led_position(self, predict=None):
+    def led_position(self, predict=None, expect_z=None, z_tol=0.2):
         """LED の3次元位置（左カメラ基準）[m]。見つからなければ None
 
         左右の光点のすべての組み合わせを調べ、
           * 再投影のずれが小さい
           * 世界座標で床より上にある（反射の鏡像を除く）
+          * 機体が報告している高度に近い（expect_z を渡した場合）
           * 直前の位置に近い
         ものを選ぶ。
+
+        expect_z は機体の下向き ToF が測った高度。これと照合することで、
+        床に置かれた別の光へロックオンしたまま機体を見失う事故を防ぐ。
         """
         left, right = self.frames()
         bls, brs = self.find_blobs(left), self.find_blobs(right)
@@ -175,6 +186,8 @@ class LedStereo:
                     w = self.R_world @ (X - self.t_ref)
                     if w[2] < self.world_z_min or w[2] > self.world_z_max:
                         continue   # 床より下（反射）や高すぎるものは捨てる
+                    if expect_z is not None and abs(w[2] - expect_z) > z_tol:
+                        continue   # 機体が報告している高度と合わない光は機体ではない
                 dist = float(np.linalg.norm(X - predict)) if predict is not None else 0.0
                 score = err + 50.0 * dist       # 直前の位置に近い方を優先
                 cand.append((score, dist, X))
@@ -255,16 +268,17 @@ class LedStereo:
             return pos, float(np.degrees(np.arctan2(Rw[1, 0], Rw[0, 0])))
         return None, None
 
-    def world_position(self, prev_world=None):
+    def world_position(self, prev_world=None, expect_z=None, z_tol=0.2):
         """LED の世界座標 [m]。見つからなければ None
 
         prev_world を渡すと、その位置に近い候補を優先する（反射との取り違え防止）。
+        expect_z を渡すと、その高さから離れた候補を除外する（別の光へのロックオン防止）。
         """
         predict = None
         if prev_world is not None:
             # 直前の世界座標をカメラ座標へ戻して予測とする
             predict = self.R_world.T @ np.asarray(prev_world) + self.t_ref
-        X, blobs = self.led_position(predict)
+        X, blobs = self.led_position(predict, expect_z, z_tol)
         if X is None:
             return None, blobs
         return self.R_world @ (X - self.t_ref), blobs
@@ -275,7 +289,7 @@ class LedStereo:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exposure", type=int, default=400, help="LED を撮るときの露出 [us]")
+    ap.add_argument("--exposure", type=int, default=700, help="LED を撮るときの露出 [us]")
     ap.add_argument("--iso", type=int, default=400)
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
     ap.add_argument("--max-area", type=int, default=300, help="これより大きい光は LED でないとみなす")

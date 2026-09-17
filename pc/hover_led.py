@@ -81,9 +81,13 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="指令を送らない（確認用）")
     ap.add_argument("--bridge-port", default=None)
     # カメラ
-    ap.add_argument("--exposure", type=int, default=400, help="LED を撮る露出 [us]")
+    ap.add_argument("--exposure", type=int, default=700, help="LED を撮る露出 [us]")
     ap.add_argument("--iso", type=int, default=400)
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
+    ap.add_argument("--led-offset-z", type=float, default=0.05,
+                    help="機体が報告する高度と LED の高さの差 [m]")
+    ap.add_argument("--z-tol", type=float, default=0.2,
+                    help="報告された高度からこれ以上離れた光は機体とみなさない [m]")
     ap.add_argument("--max-area", type=int, default=300,
                     help="これより大きい光は LED でないとみなす（窓や白い紙の除外）")
     ap.add_argument("--fps", type=int, default=60)
@@ -165,7 +169,11 @@ def main():
     last_draw = 0.0
     try:
         while True:
-            pos, blobs = tracker.world_position(pos_f)   # 直前の位置を渡し、反射との取り違えを防ぐ
+            # 機体が報告している高度（下向きToF）と照合して、別の光へのロックオンを防ぐ
+            expect_z = None
+            if telem.get("alt") is not None and time.time() - telem.get("t_recv", 0) < 1.0:
+                expect_z = telem["alt"] + args.led_offset_z
+            pos, blobs = tracker.world_position(pos_f, expect_z, args.z_tol)
             seen = pos is not None
             now = time.time() - t0
 
@@ -283,7 +291,8 @@ def main():
                             p = line.strip().split(",")
                             if len(p) >= 13:
                                 telem = {"yaw": float(p[4]), "v": float(p[5]),
-                                         "mode": int(p[7]), "t_recv": time.time()}
+                                         "alt": float(p[6]), "mode": int(p[7]),
+                                         "t_recv": time.time()}
                                 drone_flying = telem["mode"] in (2, 6)
                                 if drone_flying != flying:
                                     flying = drone_flying
