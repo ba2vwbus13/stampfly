@@ -32,6 +32,7 @@ OAK-D（白黒2台でLEDを三角測量）
 | `bridge/` | **M5GO を PC と機体の中継機にするファーム**（ESP-NOW 送信、テレメトリ転送） |
 | `oakd/` | OAK-D による位置計測（LED三角測量、ArUcoマーカー、カメラ設置の確認） |
 | `pc/` | PC 側の制御プログラム（手動操作、自動ホバリング） |
+| `tello/` | **Tello EDU の確認用**（StampFly の次に試す機体） |
 | `realsense/` | RealSense の確認用（macOS では動作せず、未使用） |
 | `backup/` | 工場出荷ファームのバックアップ（**Git には含めていない**） |
 | `docs/` | 調査の記録、参照用の写真 |
