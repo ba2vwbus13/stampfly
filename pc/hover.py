@@ -275,15 +275,13 @@ def main():
             while not keys.empty():
                 key = keys.get()
                 if key == " ":
+                    # 離陸/着陸の指令を1回送るだけ。飛行中かどうかは機体の報告で判断する
                     arm_pulse = True
                     arm_count += 1
-                    if args.dry_run:
-                        stop_reason = "お試しモードなので離陸しません"
-                    flying = not flying
                     pid_x.reset()
                     pid_y.reset()
                     transmitting = True
-                    stop_reason = ""
+                    stop_reason = "お試しモードなので離陸しません" if args.dry_run else ""
                 elif key == "w":
                     target[1] += 0.1
                 elif key == "s":
