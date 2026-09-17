@@ -39,6 +39,10 @@ def build_pipeline(width, height, fps, exposure_ms, iso):
 def make_detector():
     params = cv2.aruco.DetectorParameters()
     params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX  # 角を精密化して姿勢を安定させる
+    # 小さく写ったマーカーを拾えるようにする（人工画像での比較で効果を確認）
+    params.minMarkerPerimeterRate = 0.01      # 既定 0.03
+    # useAruco3Detection は試したが、この条件では検出率が大きく下がったため使わない
+    # （24通りの条件で 12/24 → 4/24）
     return cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(DICT), params)
 
 
