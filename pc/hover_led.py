@@ -10,6 +10,8 @@
 
 準備:
     * 床の基準マーカー(id 0, 5cm)を飛行場所の中央に置く（座標系のため）
+    * 機体の上面には何も貼らない（LED を覆うと追跡できなくなる）
+    * 機体の前(USB端子の反対側)を床マーカーの赤い矢印(+x)に向けて置く
     * M5GO に bridge/ のファームを入れ、USB で接続する
     * Atom JoyStick の電源は切る
     * 機体はリセットボタンを押してから、動かさずに初期化を待つ
@@ -81,7 +83,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="指令を送らない（確認用）")
     ap.add_argument("--bridge-port", default=None)
     # カメラ
-    ap.add_argument("--exposure", type=int, default=700, help="LED を撮る露出 [us]")
+    ap.add_argument("--exposure", type=int, default=1200, help="LED を撮る露出 [us]")
     ap.add_argument("--iso", type=int, default=400)
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
     ap.add_argument("--led-offset-z", type=float, default=0.05,

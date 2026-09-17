@@ -18,8 +18,9 @@ LED は点なので、機体がどれだけ傾いても見え方が変わらな�
 露出の目安（部屋の明るさで変わるので、飛ばす前に必ず確認する）:
     このプログラムを10秒動かし、ばらつきが 10mm 以下になる露出を選ぶ。
     左右の光点が1個ずつになるのが理想。10個も出るときは露出が長すぎる。
-      暗くした室内: 700us 付近
+      暗くした室内: 1200us 付近（実測 0.9/1.7/4.5mm）
       明るい室内  : 400us 付近（LEDが周囲の光に埋もれやすく、不安定）
+    機体上面にマーカーの紙を貼ると LED を覆って見えなくなるので貼らないこと。
     明るい部屋ではカーテンを閉めるなどして暗くした方が確実。
 """
 
@@ -42,7 +43,7 @@ COLOR = dai.CameraBoardSocket.CAM_A
 class LedStereo:
     """左右カメラで LED を追う"""
 
-    def __init__(self, fps=60, led_exposure_us=700, led_iso=400,
+    def __init__(self, fps=60, led_exposure_us=1200, led_iso=400,
                  marker_exposure_us=1000, marker_iso=400, threshold=200, min_area=3, max_area=300,
                  z_min=0.3, z_max=4.0, max_reproj_px=2.0,
                  world_z_min=-0.05, world_z_max=1.5, gate_m=0.25, z_reject=0.6):
@@ -347,7 +348,7 @@ class LedStereo:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--exposure", type=int, default=700, help="LED を撮るときの露出 [us]")
+    ap.add_argument("--exposure", type=int, default=1200, help="LED を撮るときの露出 [us]")
     ap.add_argument("--iso", type=int, default=400)
     ap.add_argument("--threshold", type=int, default=200, help="光点とみなす明るさ")
     ap.add_argument("--max-area", type=int, default=300, help="これより大きい光は LED でないとみなす")
