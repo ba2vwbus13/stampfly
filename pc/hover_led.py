@@ -192,6 +192,18 @@ def main():
           "（c キー、または M5GO の B ボタンでも取れます）")
     print("スペース=離陸/着陸  wasd=目標移動  rf=目標高度  h=その場  z=停止  Ctrl-C=終了")
 
+    # 追跡が健全かを最初に確かめる（見失いが多いまま飛ばさない）
+    print("LED の追跡を確認中…", end="", flush=True)
+    hit = 0
+    for _ in range(60):
+        p_chk, _ = tracker.world_position()
+        hit += p_chk is not None
+    rate = 100 * hit / 60
+    print(f" 検出率 {rate:.0f}%")
+    if rate < 80:
+        print("警告: 検出率が低いです。--exposure を調整するか、部屋を暗くしてください")
+        print("      （oakd/led_stereo.py を10秒動かし、ばらつき10mm以下になる露出を選ぶ）")
+
     t0 = time.time()
     last_draw = 0.0
     try:
@@ -313,7 +325,11 @@ def main():
                         line, rx = rx.split("\n", 1)
                         if line.startswith("#BTN,"):
                             btn = line.strip().split(",")[-1]
-                            if btn == "B":
+                            if btn == "A" and not flying and (time.time() - last_seen) > 0.3:
+                                stop_reason = "LEDが見えないので離陸しません（Aボタン）"
+                                # 中継機側はすでに離陸指令を送ってしまうため、すぐ停止する
+                                transmitting = False
+                            elif btn == "B":
                                 # 飛行前: 向きの基準を取る / 飛行中: いまの位置を目標にする
                                 if not flying and telem.get("yaw") is not None:
                                     yaw_zero = args.yaw_sign * telem["yaw"]
