@@ -21,7 +21,8 @@
 
 安全のための自動着陸:
     * 目標から --fence 以上離れた
-    * マーカーを --lost-land 秒以上見失った（1秒未満の見失いは指令0で待つ）
+    * マーカーを --lost-land 秒以上見失った（見失っている間は指令0で Tello 自身のホバリングに任せる）
+    * OAK-D が落ちて --camera-down-land 秒以内に復帰しない（落ちたら自動で開き直す）
     * Ctrl-C
 """
 
@@ -64,15 +65,25 @@ class Tracker(threading.Thread):
         self.fps = 0.0
         self.pixel = None         # 映像内のマーカー中心（0〜1）
         self.error = None
+        self.crashes = 0          # 途中で落ちて開き直した回数
+        self.down = False         # 開き直している最中
         self.ready = threading.Event()
         self.stop = False
 
     def run(self):
-        try:
-            self._loop()
-        except Exception as e:     # メイン側で気づけるように保存する
-            self.error = e
-            self.ready.set()
+        # OAK-D は飛行中に落ちることがある（device has crashed）。落ちたら開き直す。
+        # その間 Tello は自分でホバリングしているので、数秒の中断なら飛行を続けられる
+        while not self.stop:
+            try:
+                self._loop()
+            except Exception as e:
+                self.error = e
+                if not self.ready.is_set():   # 最初から開けないときはメイン側で終了する
+                    self.ready.set()
+                    return
+                self.crashes += 1
+                self.down = True
+                time.sleep(0.5)
 
     def _loop(self):
         width, height = 1920, 1080
@@ -86,6 +97,7 @@ class Tracker(threading.Thread):
             R_world = self.R_ref.T
             prev_R = {}
             n, t_fps = 0, time.time()
+            self.down = False
             self.ready.set()
             while not self.stop:
                 pkt = latest(q)
@@ -155,7 +167,9 @@ def main():
     ap.add_argument("--max-cmd", type=int, default=25, help="水平指令の上限（rc、最大100）")
     ap.add_argument("--deadband", type=float, default=0.02, help="これ以内のずれは直さない [m]")
     ap.add_argument("--fence", type=float, default=0.5, help="目標からこれ以上離れたら着陸 [m]")
-    ap.add_argument("--lost-land", type=float, default=2.0, help="これ以上見失ったら着陸 [s]")
+    ap.add_argument("--camera-down-land", type=float, default=8.0,
+                    help="カメラが落ちて開き直している間、これ以上続いたら着陸 [s]")
+    ap.add_argument("--lost-land", type=float, default=3.0, help="これ以上見失ったら着陸 [s]")
     ap.add_argument("--probe-cmd", type=int, default=20, help="向きを測るときの前進指令（rc）")
     ap.add_argument("--marker-id", type=int, default=1)
     ap.add_argument("--marker-cm", type=float, default=4.0)
@@ -169,7 +183,7 @@ def main():
     tracker = Tracker(args.calib, args.marker_id, args.marker_cm, args.exposure, args.iso)
     tracker.start()
     tracker.ready.wait(20)
-    if tracker.error:
+    if tracker.error and not tracker.is_alive():
         sys.exit(f"OAK-D を開けません: {tracker.error}")
     print(f"OAK-D: USB {tracker.usb}  座標系 {tracker.calib_created}")
     if tracker.usb.endswith("HIGH"):
@@ -277,8 +291,9 @@ def main():
                     cmd_r = int(np.clip(right, -args.max_cmd, args.max_cmd))
                     cmd_f = int(np.clip(fwd, -args.max_cmd, args.max_cmd))
                 stats.append(dist_err)
-            elif now - last_ok > args.lost_land:
-                reason = f"マーカーを {now - last_ok:.1f} 秒見失った"
+            elif now - last_ok > (args.camera_down_land if tracker.down else args.lost_land):
+                reason = (f"カメラが復帰しない（{now - last_ok:.1f} 秒）" if tracker.down
+                          else f"マーカーを {now - last_ok:.1f} 秒見失った")
                 break
             tello.send_rc_control(cmd_r, cmd_f, 0, 0)
 
@@ -295,7 +310,8 @@ def main():
                     sys.stdout.write(f"\r{now - t0:5.1f}s  ずれ x{err[0] * 100:+5.1f} y{err[1] * 100:+5.1f}cm"
                                      f"  指令 右{cmd_r:+3d} 前{cmd_f:+3d}  カメラ{tracker.fps:3.0f}fps   ")
                 else:
-                    sys.stdout.write(f"\r{now - t0:5.1f}s  マーカーを見失い中（指令0）"
+                    what = "カメラを開き直し中" if tracker.down else "マーカーを見失い中"
+                    sys.stdout.write(f"\r{now - t0:5.1f}s  {what}（指令0）"
                                      f"                          ")
                 sys.stdout.flush()
             time.sleep(0.05)
@@ -316,6 +332,8 @@ def main():
             log_file.close()
         tello.end()
 
+    if tracker.crashes:
+        print(f"注意: 飛行中に OAK-D が {tracker.crashes} 回落ちて開き直しました")
     if stats:
         a = np.array(stats) * 100
         print(f"\n目標からのずれ: 平均 {a.mean():.1f}cm  最大 {a.max():.1f}cm  "
