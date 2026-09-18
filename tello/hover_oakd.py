@@ -521,12 +521,15 @@ def main():
                         integral = i_cmd / (args.ki * 100)  # 上限で頭打ちにして溜め込みを防ぐ
                     else:
                         i_cmd = np.zeros(2)
-                    i_size = float(np.linalg.norm(i_cmd))
+
                     # 速度の分を引く（ブレーキ）。これが無いと目標を通り過ぎて振動が続く
                     v = err * args.kp * 100 + i_cmd - vel * args.kd
                     right, fwd = to_body(v[0], v[1], head + offset)
                     cmd_r = int(np.clip(right, -args.max_cmd, args.max_cmd))
                     cmd_f = int(np.clip(fwd, -args.max_cmd, args.max_cmd))
+                # 積分の大きさは、ずれが小さくて指令を出さないときも記録する
+                # （そうしないとログ上で 0 に落ちて、消えたように見える）
+                i_size = float(np.linalg.norm(integral) * args.ki * 100)
                 stats.append(dist_err)
             elif now - last_ok > (args.camera_down_land if cam_down else args.lost_land):
                 reason = (f"カメラが復帰しない（{now - last_ok:.1f} 秒）" if cam_down
