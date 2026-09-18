@@ -57,13 +57,20 @@ def main():
         m = wp == w
         goals.append((tx[m][-1], ty[m][-1]))
     gx, gy = zip(*goals)
-    ax.plot(list(gx) + [gx[0]], list(gy) + [gy[0]], "--", color="crimson", lw=1, zorder=3)
+    ax.plot(gx, gy, "--", color="crimson", lw=1, zorder=3)
     ax.scatter(gx, gy, marker="s", s=90, facecolor="none", edgecolor="crimson",
                lw=2, zorder=4, label="目標の点")
+    # 経路が出発点へ戻るとき、最初と最後の点は同じ座標になる。
+    # そのままだとラベルが重なって読めないので、同じ場所の番号はまとめる
+    labels = {}
     for i, (a, b) in enumerate(goals):
-        ax.annotate(str(i + 1), (a, b), textcoords="offset points", xytext=(8, 6),
-                    color="crimson", fontsize=11, fontweight="bold")
+        labels.setdefault((round(a, 1), round(b, 1)), []).append(str(i + 1))
+    for (a, b), names in labels.items():
+        ax.annotate("・".join(names) + " 点目", (a, b), textcoords="offset points",
+                    xytext=(9, 7), color="crimson", fontsize=11, fontweight="bold")
+    ax.scatter([0], [0], marker="*", s=180, color="tab:green", zorder=5, label="離陸地点")
     ax.set_aspect("equal")
+    ax.margins(0.16)          # ラベルが枠からはみ出さないように余白を取る
     ax.set_xlabel("x [cm]（基準マーカーの矢印の向き）")
     ax.set_ylabel("y [cm]")
     ax.set_title(f"上から見た軌跡　{path.name}")
