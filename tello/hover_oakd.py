@@ -191,6 +191,11 @@ def probe_direction(tello, tracker, rc_fwd, dist_m, timeout, settle=2.0):
         pp = np.array([q[1] for q in drift_pts])
         drift = (tt @ (pp - pp.mean(axis=0))) / (tt @ tt)      # 最小二乗の傾き [m/s]
 
+    if wait_sample(tracker, 0.3, 5.0) is None:      # 落ち着くのを待つ（離陸直後は流れる）
+        where = (f"最後に見えたのは 横 {tracker.pixel[0] * 100:.0f}% 縦 {tracker.pixel[1] * 100:.0f}%"
+                 if tracker.pixel is not None else "一度も見えていません")
+        raise RuntimeError(f"浮いた状態でマーカーが見えません。{where}\n"
+                           f"  離陸で約80cmまで上がったときに画面から出た可能性があります")
     p0, _ = average_position(tracker, 0.7)
     if p0 is None:
         raise RuntimeError("浮いた状態でマーカーが見えません（カメラの画面外に出ていないか確認）")
@@ -328,6 +333,13 @@ def main():
         ng = not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7)
         print(f"  {i + 1}. ずれ x{d[0] * 100:+5.0f} y{d[1] * 100:+5.0f}cm → "
               f"横 {u * 100:3.0f}%  縦 {v * 100:3.0f}%" + ("   ← 画面の外へ出ます" if ng else ""))
+    # Tello は離陸で必ず約80cmまで上がる（高さは指定できない）。そこでも入るか確かめる
+    z_takeoff = ground[2] + 0.80
+    u, v = image_ratio(tracker, [ground[0], ground[1], z_takeoff])
+    print(f"  離陸直後（約80cm）→ 横 {u * 100:3.0f}%  縦 {v * 100:3.0f}%"
+          + ("   ← 画面の外へ出ます" if not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7) else ""))
+    takeoff_bad = not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7)
+
     # 向きの測定で前後に --probe-dist 動くぶんも、画面に入るか確かめる
     d = args.probe_dist
     probe_pts = [ground[:2] + np.array(v) for v in ((d, 0), (-d, 0), (0, d), (0, -d))]
@@ -339,6 +351,8 @@ def main():
 
     bad = [i for i, tg in enumerate(list(targets) + probe_pts)
            if not all(0.3 <= r <= 0.7 for r in image_ratio(tracker, [tg[0], tg[1], z_hover]))]
+    if takeoff_bad and not bad:
+        sys.exit("離陸直後（約80cm）に画面の外へ出ます。Tello を画面の中央寄りに置いてください")
     if bad:
         # 「離陸地点を中央に」では足りない。離陸地点が中央でも遠い端だけ
         # はみ出すことがあり、そのときは「動かさなくてよい」と答えてしまう。
@@ -390,7 +404,12 @@ def main():
         print("離陸します（Ctrl-C で着陸）")
         tello.takeoff()
         t_adj = time.time()
+        seen = total = 0            # 降りている間、マーカーが見えていた割合
         while time.time() - t_adj < 12:
+            total += 1
+            sm = tracker.sample
+            if sm is not None and time.time() - sm[0] < 0.3:
+                seen += 1
             tof = tello.get_distance_tof()
             if 0 < tof <= 500:
                 err = args.height - tof
@@ -403,6 +422,12 @@ def main():
                 tello.send_rc_control(0, 0, speed, 0)
             time.sleep(0.05)
         tello.send_rc_control(0, 0, 0, 0)
+        if total:
+            note = ""
+            if seen < total * 0.8 and tracker.pixel is not None:
+                note = (f"  最後に見えたのは 横 {tracker.pixel[0] * 100:.0f}% "
+                        f"縦 {tracker.pixel[1] * 100:.0f}%")
+            print(f"降下中にマーカーが見えていた割合 {seen / total * 100:.0f}%{note}")
         time.sleep(1.0)
 
         # 2. 前方向を実測する（前と後ろの2回。食い違ったら飛ばさない）
