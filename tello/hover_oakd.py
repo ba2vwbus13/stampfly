@@ -169,30 +169,49 @@ def center_on_plane(tracker, z):
     return cam + (z - cam[2]) / ray[2] * ray
 
 
-def probe_direction(tello, tracker, rc_fwd, dist_m, timeout):
+def probe_direction(tello, tracker, rc_fwd, dist_m, timeout, settle=2.0):
     """rc_fwd の向きへ押して、実際に動いた向き（世界座標 deg）とマーカーの向きを返す
 
-    8cm の移動では機体自身のふらつき（数cm）が方向の誤差になり、数十度ずれる。
-    20cm 押しながら経路の点をすべて集め、直線をあてはめて向きを出す。
+    短い移動では機体自身のふらつき（数cm）が方向の誤差になり、数十度ずれるので、
+    押しながら経路の点を集め、直線をあてはめて向きを出す。
+
+    押し始めの数cm は、前の動きの勢いが残っていて向きが当てにならない
+    （前へ押したあとすぐ後ろへ押すと、まだ前へ流れている分が混ざる。実測で
+    後ろへ 4.3cm しか動かず、向きが 173度 ひっくり返った）。そのため
+    - 押す前に settle 秒、指令0 で止まるのを待つ
+    - 始点から 3cm 離れるまでの点は使わない
     """
+    t_settle = time.time()
+    while time.time() - t_settle < settle:
+        tello.send_rc_control(0, 0, 0, 0)     # 止まるのを待つ（無指令だと15秒で着陸する）
+        time.sleep(0.05)
     p0, _ = average_position(tracker, 0.7)
     if p0 is None:
         raise RuntimeError("浮いた状態でマーカーが見えません（カメラの画面外に出ていないか確認）")
     pts, heads, last = [], [], None
+    far = 0.0
     t_push = time.time()
     while time.time() - t_push < timeout:
         tello.send_rc_control(0, rc_fwd, 0, 0)
         s = tracker.sample
         if s is not None and time.time() - s[0] < 0.2 and s is not last:
             last = s
-            pts.append(s[1][:2])
-            heads.append(s[2])
-            if np.linalg.norm(s[1][:2] - p0[:2]) >= dist_m:
+            d = float(np.linalg.norm(s[1][:2] - p0[:2]))
+            far = max(far, d)
+            if d >= 0.03:                     # 勢いが残っている区間は使わない
+                pts.append(s[1][:2])
+                heads.append(s[2])
+            if d >= dist_m:
                 break
         time.sleep(0.05)
     tello.send_rc_control(0, 0, 0, 0)
-    if len(pts) < 5:
+    if last is None:
         raise RuntimeError("押している間にマーカーを見失いました")
+    if far < dist_m * 0.6 or len(pts) < 5:
+        raise RuntimeError(
+            f"{far * 100:.1f}cm しか動けませんでした（目標 {dist_m * 100:.0f}cm）。"
+            f"向きが決められないので中止します。\n"
+            f"  --probe-cmd を大きくするか、--probe-dist を小さくしてください")
     pts = np.array(pts)
     net = pts[-1] - p0[:2]
     dist = float(np.linalg.norm(net))
@@ -361,11 +380,10 @@ def main():
         #    回り続ける（実測: 半径20cm・周期7秒の円を描いて画面外へ出た）
         print("前後に動かして、機体の向きを測ります")
         fwd_a, head_a, dist_a = probe_direction(tello, tracker, args.probe_cmd,
-                                                args.probe_dist, 3.0)
+                                                args.probe_dist, 4.0, settle=1.0)
         off_a = wrap_deg(fwd_a - head_a)
-        time.sleep(0.5)
         back, head_b, dist_b = probe_direction(tello, tracker, -args.probe_cmd,
-                                               args.probe_dist, 3.0)
+                                               args.probe_dist, 4.0, settle=2.0)
         off_b = wrap_deg(back + 180.0 - head_b)
         print(f"  前へ {dist_a * 100:.1f}cm → マーカーとの差 {off_a:+.1f}度")
         print(f"  後へ {dist_b * 100:.1f}cm → マーカーとの差 {off_b:+.1f}度")
