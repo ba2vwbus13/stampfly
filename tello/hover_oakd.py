@@ -251,6 +251,13 @@ def main():
     ap.add_argument("--ki", type=float, default=0.35,
                     help="積分ゲイン。同じ向きのずれが残り続けたときに指令を足していく。"
                          "0 で比例のみ（定常偏差が -7cm 残った）")
+    ap.add_argument("--kd", type=float, default=0.6,
+                    help="微分ゲイン（ブレーキ）。機体の速度[cm/s]にこれを掛けた分を指令から引く。"
+                         "0 だと目標を通り過ぎて振動が止まらない")
+    ap.add_argument("--move-speed", type=float, default=0.15,
+                    help="目標を次の点へ動かす速さ [m/s]。一瞬で飛ばすと行き過ぎる")
+    ap.add_argument("--i-band", type=float, default=0.10,
+                    help="積分を効かせるずれの範囲 [m]。移動中に溜め込まないため")
     ap.add_argument("--max-i", type=float, default=10.0,
                     help="積分が出せる指令の上限（rc）。溜まりすぎての行き過ぎを防ぐ")
     ap.add_argument("--max-cmd", type=int, default=25, help="水平指令の上限（rc、最大100）")
@@ -408,7 +415,9 @@ def main():
         integral = np.zeros(2)      # ずれの積み上げ（世界座標, m*s）
         t_prev = time.time()
         wp = -1
-        target = targets[0]
+        target = targets[0].copy()      # なめらかに動かす、いまの目標
+        goal = targets[0]               # 向かっている点
+        recent = []                     # 速度を出すための (時刻, 位置)
         while time.time() - t0 < wp_time * len(targets):
             now = time.time()
             dt = now - t_prev
@@ -417,11 +426,16 @@ def main():
             i_wp = min(int((now - t0) / wp_time), len(targets) - 1)
             if i_wp != wp:
                 wp = i_wp
-                target = targets[wp]
+                goal = targets[wp]
                 if len(targets) > 1:
                     d = offsets[wp]
                     print(f"\n  {wp + 1}/{len(targets)} 点目へ "
                           f"（離陸地点から x{d[0] * 100:+.0f} y{d[1] * 100:+.0f}cm）")
+            # 目標を goal へ --move-speed で近づける（一瞬で飛ばすと行き過ぎる）
+            to_goal = goal - target
+            step = args.move_speed * dt
+            target = goal.copy() if np.linalg.norm(to_goal) <= step else target + to_goal / np.linalg.norm(to_goal) * step
+
             s = tracker.sample
             age = now - s[0] if s is not None else 99.0
             cam_down = tracker.down or now - tracker.last_frame > 1.0   # 映像そのものが止まっている
@@ -435,16 +449,25 @@ def main():
                 if dist_err > args.fence:
                     reason = f"目標から {dist_err * 100:.0f}cm 離れた"
                     break
+                # 機体の速度［cm/s］（0.2秒前との差。1フレーム差では雑音が乗る）
+                recent.append((now, pos[:2].copy()))
+                while len(recent) > 2 and now - recent[0][0] > 0.2:
+                    recent.pop(0)
+                vel = ((pos[:2] - recent[0][1]) / (now - recent[0][0]) * 100
+                       if now - recent[0][0] > 0.05 else np.zeros(2))
+
                 if dist_err > args.deadband:
                     # 比例だけだと、機体を押し続ける外乱と釣り合う分のずれが残る
-                    # （実測で x に -7cm）。同じ向きのずれを積み上げて、その分を足す
-                    if args.ki > 0:
+                    # （実測で x に -7cm）。同じ向きのずれを積み上げて、その分を足す。
+                    # ただし移動中に溜めると行き過ぎるので、目標の近くでだけ効かせる
+                    if args.ki > 0 and dist_err < args.i_band:
                         integral += err * dt
                         i_cmd = np.clip(integral * args.ki * 100, -args.max_i, args.max_i)
                         integral = i_cmd / (args.ki * 100)  # 上限で頭打ちにして溜め込みを防ぐ
                     else:
                         i_cmd = np.zeros(2)
-                    v = err * args.kp * 100 + i_cmd         # rc 値（≒cm/s）
+                    # 速度の分を引く（ブレーキ）。これが無いと目標を通り過ぎて振動が続く
+                    v = err * args.kp * 100 + i_cmd - vel * args.kd
                     right, fwd = to_body(v[0], v[1], head + offset)
                     cmd_r = int(np.clip(right, -args.max_cmd, args.max_cmd))
                     cmd_f = int(np.clip(fwd, -args.max_cmd, args.max_cmd))
@@ -455,6 +478,7 @@ def main():
                 break
             if age >= 0.3:
                 integral[:] = 0      # 見失っている間に溜めると、復帰した瞬間に暴れる
+                recent.clear()       # 古い位置との差で速度を出さない
             tello.send_rc_control(cmd_r, cmd_f, 0, 0)
 
             if writer:
