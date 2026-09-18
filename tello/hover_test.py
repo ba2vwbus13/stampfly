@@ -53,15 +53,19 @@ def main():
         tello.takeoff()   # 仕様で必ず約80cmまで上がる（高さは指定できない）
         # 目標の高さまで、下向きToFを見ながらゆっくり降りる/上がる
         t_adj = time.time()
-        while time.time() - t_adj < 8:
+        while time.time() - t_adj < 12:
             tof = tello.get_distance_tof()
             if tof <= 0 or tof > 500:        # 測定範囲外の値は無視
                 time.sleep(0.05)
                 continue
             err = args.height - tof
-            if abs(err) <= 5:
+            if abs(err) <= 3:
                 break
-            speed = int(max(-30, min(30, err)))   # 最大30cm/s
+            # 誤差に比例させるだけだと、目標に近づくと指令が弱すぎて動かなくなる
+            # （40cm狙いで46cmのまま止まった）。最低でも8cm/s は出す
+            speed = int(max(-30, min(30, err * 1.5)))
+            if abs(speed) < 8:
+                speed = 8 if speed > 0 else -8
             tello.send_rc_control(0, 0, speed, 0)
             sys.stdout.write(f"\r高さを調整中: ToF {tof}cm → 目標 {args.height}cm   ")
             sys.stdout.flush()
@@ -81,6 +85,9 @@ def main():
                              f"R{row[2]:+3d} P{row[3]:+3d} Y{row[4]:+4d}  "
                              f"速度({row[5]:+3d},{row[6]:+3d},{row[7]:+3d})  残量{row[8]}%   ")
             sys.stdout.flush()
+            # Tello は15秒間なにも指令が届かないと自動で着陸する。
+            # 状態を読むだけでは指令にならないので、毎回「動かない指令」を送り続ける
+            tello.send_rc_control(0, 0, 0, 0)
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\n中断します")
@@ -89,15 +96,18 @@ def main():
         try:
             tello.land()
         except Exception as e:
-            print(f"着陸の指令に失敗: {e}")
+            # すでに着陸済みだと Tello は 'error' を返す。異常ではない
+            print(f"着陸の指令に失敗（すでに着陸していれば問題ない）: {e}")
         if log_file:
             log_file.close()
         tello.end()
+        Tello.__del__ = lambda self: None   # 終了時に end() が二重に走るのを止める
 
     if samples:
         a = np.array(samples, dtype=float)
         print(f"\nホバリングの安定度（{len(a)}サンプル）")
-        print(f"  高度     : 平均{a[:,0].mean():.0f}cm  ばらつき{a[:,0].std():.1f}cm")
+        # h（気圧基準の高度）は飛行中も 0 や -40 を返して当てにならない。ToF を使う
+        print(f"  高さ(ToF): 平均{a[:,1].mean():.0f}cm  ばらつき{a[:,1].std():.1f}cm")
         print(f"  姿勢     : ロール{a[:,2].mean():+.1f}±{a[:,2].std():.1f}度  "
               f"ピッチ{a[:,3].mean():+.1f}±{a[:,3].std():.1f}度")
         print(f"  水平速度 : |vx|平均{np.abs(a[:,5]).mean():.1f}  |vy|平均{np.abs(a[:,6]).mean():.1f} cm/s")

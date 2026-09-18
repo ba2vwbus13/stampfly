@@ -253,13 +253,17 @@ def main():
         print("離陸します（Ctrl-C で着陸）")
         tello.takeoff()
         t_adj = time.time()
-        while time.time() - t_adj < 8:
+        while time.time() - t_adj < 12:
             tof = tello.get_distance_tof()
             if 0 < tof <= 500:
                 err = args.height - tof
-                if abs(err) <= 5:
+                if abs(err) <= 3:
                     break
-                tello.send_rc_control(0, 0, int(np.clip(err, -30, 30)), 0)
+                # 誤差に比例させるだけでは、近づくと指令が弱すぎて止まってしまう
+                speed = int(np.clip(err * 1.5, -30, 30))
+                if abs(speed) < 8:
+                    speed = 8 if speed > 0 else -8
+                tello.send_rc_control(0, 0, speed, 0)
             time.sleep(0.05)
         tello.send_rc_control(0, 0, 0, 0)
         time.sleep(1.0)
