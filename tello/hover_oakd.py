@@ -162,13 +162,6 @@ def image_ratio(tracker, p_world):
     return x[0] / x[2] / 1920, x[1] / x[2] / 1080
 
 
-def center_on_plane(tracker, z):
-    """高さ z の水平面で、映像の中央に写る点（世界座標）"""
-    cam = tracker.R_ref.T @ (-tracker.t_ref)
-    ray = tracker.R_ref.T @ np.array([0.0, 0.0, 1.0])
-    return cam + (z - cam[2]) / ray[2] * ray
-
-
 def probe_direction(tello, tracker, rc_fwd, dist_m, timeout, settle=2.0):
     """rc_fwd の向きへ押して、実際に動いた向き（世界座標 deg）とマーカーの向きを返す
 
@@ -346,12 +339,27 @@ def main():
     bad = [i for i, tg in enumerate(list(targets) + probe_pts)
            if not all(0.3 <= r <= 0.7 for r in image_ratio(tracker, [tg[0], tg[1], z_hover]))]
     if bad:
-        c = center_on_plane(tracker, z_hover)
-        sys.exit(f"{len(bad)}個の点が画面の外です。Tello を動かすか、経路を小さく"
-                 f"（あるいは --probe-dist を小さく）してください:\n"
-                 f"  離陸地点を x 方向に {(c[0] - ground[0]) * 100:+.0f}cm、"
-                 f"y 方向に {(c[1] - ground[1]) * 100:+.0f}cm 動かすと中央になります"
-                 f"（基準マーカーの矢印の向きが +）")
+        # 「離陸地点を中央に」では足りない。離陸地点が中央でも遠い端だけ
+        # はみ出すことがあり、そのときは「動かさなくてよい」と答えてしまう。
+        # 通る点すべてが最も余裕をもって収まる置き場所を探す
+        def margin(g):
+            m = 1.0
+            for tg in [g + d for d in offsets] + [g + np.array(v) for v in
+                                                  ((d, 0), (-d, 0), (0, d), (0, -d))]:
+                for r in image_ratio(tracker, [tg[0], tg[1], z_hover]):
+                    m = min(m, r - 0.3, 0.7 - r)
+            return m
+        best = max(((margin(ground[:2] + np.array([ax, ay])), ax, ay)
+                    for ax in np.arange(-0.8, 0.801, 0.01)
+                    for ay in np.arange(-0.8, 0.801, 0.01)), key=lambda q: q[0])
+        m, ax, ay = best
+        if m > 0:
+            sys.exit(f"{len(bad)}個の点が画面の外です。\n"
+                     f"  Tello を x 方向に {ax * 100:+.0f}cm、y 方向に {ay * 100:+.0f}cm "
+                     f"動かしてください（基準マーカーの矢印の向きが +）")
+        sys.exit(f"{len(bad)}個の点が画面の外です。どこに置いても収まりません。\n"
+                 f"  経路を小さくするか、--probe-dist を小さくするか、"
+                 f"カメラを遠ざけてください（python3 tello/place.py で上限がわかります）")
     total = args.dwell * len(targets) if args.waypoints else args.seconds
     print(f"離陸地点 x{ground[0]:+.3f} y{ground[1]:+.3f} z{ground[2]:+.3f} m"
           f"  通る点 {len(targets)}個  所要 {total:.0f}秒")
