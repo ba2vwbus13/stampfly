@@ -264,7 +264,8 @@ def main():
     ap.add_argument("--move-speed", type=float, default=0.15,
                     help="目標を次の点へ動かす速さ [m/s]。一瞬で飛ばすと行き過ぎる")
     ap.add_argument("--i-band", type=float, default=0.10,
-                    help="積分を効かせるずれの範囲 [m]。移動中に溜め込まないため")
+                    help="積分を溜めるずれの範囲 [m]。これより離れている間は溜めるのを"
+                         "やめる（すでに溜めた分は出し続ける）")
     ap.add_argument("--max-i", type=float, default=18.0,
                     help="積分が出せる指令の上限（rc）。溜まりすぎての行き過ぎを防ぐ。"
                          "10 では外乱の強い日に押し負けて、到達後 毎秒1cm 離れていった")
@@ -484,8 +485,13 @@ def main():
                     # 比例だけだと、機体を押し続ける外乱と釣り合う分のずれが残る
                     # （実測で x に -7cm）。同じ向きのずれを積み上げて、その分を足す。
                     # ただし移動中に溜めると行き過ぎるので、目標の近くでだけ効かせる
-                    if args.ki > 0 and dist_err < args.i_band:
-                        integral += err * dt
+                    if args.ki > 0:
+                        # 目標から離れている間は「溜めるのをやめる」だけにする。
+                        # 効果ごと0にすると、離れ始めた瞬間に外乱を打ち消す力が消えて
+                        # さらに離れる（実測: ずれ8cmのまま積分が10.7→5.7と減っていった）。
+                        # 外乱は機体がどこにいても同じ向きなので、打ち消す分は出し続ける
+                        if dist_err < args.i_band:
+                            integral += err * dt
                         i_cmd = np.clip(integral * args.ki * 100, -args.max_i, args.max_i)
                         integral = i_cmd / (args.ki * 100)  # 上限で頭打ちにして溜め込みを防ぐ
                     else:
