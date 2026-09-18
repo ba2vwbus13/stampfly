@@ -21,8 +21,12 @@
 
    ```bash
    pip install platformio pyserial matplotlib esptool
+   pip install "depthai<3" djitellopy opencv-python      # OAK-D と Tello
    ```
 
+   - **depthai は 2 系を指定すること。** `pip install depthai` では 3.x が入るが、
+     `oakd/` のコードは 2 系の API（`XLinkOut` など）で書かれていて動かない。
+     確認は `python3 -c "import depthai; print(depthai.__version__)"`（2.33.0.0 で確認済み）。
    - PlatformIOは初回ビルド時に espressif32@6.9.0 一式（数百MB）をダウンロードする。
    - **学内ネットワークではプロキシの指定が必要**（指定しないと `InternetConnectionError` になる）。
 
@@ -31,6 +35,13 @@
      ```
 
 4. シリアルポートの名前はマシンによって変わる。StampFlyは `/dev/cu.usbmodem*` になる。旧マシンでは `/dev/cu.usbmodem83101` だった。
+5. **シェルのロケールを確認する。** `LANG` が未設定だと `LC_CTYPE=C` になり、
+   ターミナルで日本語のパスが文字化けして打てない。`~/.zshrc` に
+   `export LANG=ja_JP.UTF-8` を入れる。
+6. **Tello を飛ばす間は有線LANを挿しておく。** Wi-Fi を Tello に繋ぐと学内ネット
+   から切れるが、有線があればインターネットは有線側から出る（サービス順序で
+   Ethernet が Wi-Fi より上にあること）。Tello は `192.168.10.x` なので
+   アドレスの衝突もない。
 
 ## 2. 現在の状態
 
