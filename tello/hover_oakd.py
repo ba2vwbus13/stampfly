@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""OAK-D で測った位置を使い、Tello EDU を離陸地点の真上に留める
+"""OAK-D で測った位置を使い、Tello EDU を決めた場所に留める／決めた点を順に通す
 
     python3 tello/hover_oakd.py --seconds 20 --log ~/Desktop/tello_pos1.csv
+    python3 tello/hover_oakd.py --waypoints "0,0 0.3,0 0.3,0.3 0,0.3 0,0" --dwell 12
 
 事前に:
     * oakd/track_world.py --calibrate で座標系を作っておく（カメラを動かしたら作り直す）
@@ -12,8 +13,10 @@
     1. 離陸し、下向きToFで --height まで降りる
     2. 少し（8cm）前に動き、その移動をカメラで見て「機体の前方向」を世界座標で実測する
        （StampFly では向きの思い込みが -90度ずれていて暴走した。その対策）
-    3. 離陸地点の真上へ戻るように、水平の速度指令を出し続ける
+    3. 目標へ戻るように、水平の速度指令を出し続ける（P+I 制御）
        高さは Tello 自身の高度維持に任せる
+       --waypoints を付けると、目標を --dwell 秒ごとに次の点へ移していく
+       （離陸前に、通る点すべてが浮いたときも画面に入るかを確かめる）
 
 役割の分担:
     Tello は自分の下向きカメラで速度をほぼ0に保つ（単体で水平ずれ ±2cm 程度）。
@@ -180,6 +183,12 @@ def to_body(vx, vy, fwd_deg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=float, default=20, help="位置制御する時間 [s]")
+    ap.add_argument("--waypoints", default=None,
+                    help="通過する点を離陸地点からのずれ [m] で並べる。"
+                         "例 \"0,0 0.3,0 0.3,0.3 0,0.3 0,0\" で一辺30cmの正方形。"
+                         "x は基準マーカーの矢印の向き。省略すると離陸地点に留まる")
+    ap.add_argument("--dwell", type=float, default=10.0,
+                    help="1つの点に留まる時間 [s]。整定に10秒以上かかるので短くしすぎない")
     ap.add_argument("--height", type=int, default=40, help="ホバリング高さ（下向きToF）[cm]")
     ap.add_argument("--kp", type=float, default=1.0,
                     help="ずれに対する速度指令のゲイン。1.0 なら 10cm ずれで指令10（≒10cm/s）")
@@ -221,18 +230,39 @@ def main():
     if s is None:
         sys.exit(f"マーカー id {args.marker_id} が見えません。Tello の置き場所を確認してください")
     ground, _ = average_position(tracker, 1.0)
-    target = ground[:2].copy()
     # カメラは真下を向いていないので、浮くと映像の中で位置がずれる。
     # 地上ではなく「ホバリング高さでどこに写るか」で置き場所を判定する
     z_hover = ground[2] + args.height / 100.0
-    u, v = image_ratio(tracker, [ground[0], ground[1], z_hover])
-    print(f"ホバリング時の映像内の位置（予測）: 横 {u * 100:.0f}%  縦 {v * 100:.0f}%（中央は 50%）")
-    if not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7):
+
+    # 通る点を決める（離陸地点からのずれ [m]）
+    if args.waypoints:
+        try:
+            offsets = [np.array([float(a), float(b)]) for a, b in
+                       (w.split(",") for w in args.waypoints.split())]
+        except ValueError:
+            sys.exit('--waypoints の書き方が違います。例: "0,0 0.3,0 0.3,0.3 0,0.3 0,0"')
+    else:
+        offsets = [np.zeros(2)]
+    targets = [ground[:2] + d for d in offsets]
+
+    # 浮いたとき画面から出ないか、通る点すべてで確かめる（出ると見失って着陸する）
+    print(f"ホバリング時の映像内の位置（予測、中央は 50%）")
+    for i, (tg, d) in enumerate(zip(targets, offsets)):
+        u, v = image_ratio(tracker, [tg[0], tg[1], z_hover])
+        ng = not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7)
+        print(f"  {i + 1}. ずれ x{d[0] * 100:+5.0f} y{d[1] * 100:+5.0f}cm → "
+              f"横 {u * 100:3.0f}%  縦 {v * 100:3.0f}%" + ("   ← 画面の外へ出ます" if ng else ""))
+    bad = [i for i, tg in enumerate(targets)
+           if not all(0.3 <= r <= 0.7 for r in image_ratio(tracker, [tg[0], tg[1], z_hover]))]
+    if bad:
         c = center_on_plane(tracker, z_hover)
-        sys.exit(f"このままだと浮いたときに画面の外へ出ます。Tello を動かしてください:\n"
-                 f"  x 方向に {(c[0] - ground[0]) * 100:+.0f}cm、y 方向に {(c[1] - ground[1]) * 100:+.0f}cm"
+        sys.exit(f"{len(bad)}個の点が画面の外です。Tello を動かすか、経路を小さくしてください:\n"
+                 f"  離陸地点を x 方向に {(c[0] - ground[0]) * 100:+.0f}cm、"
+                 f"y 方向に {(c[1] - ground[1]) * 100:+.0f}cm 動かすと中央になります"
                  f"（基準マーカーの矢印の向きが +）")
-    print(f"離陸地点 x{ground[0]:+.3f} y{ground[1]:+.3f} z{ground[2]:+.3f} m → ここを目標にします")
+    total = args.dwell * len(targets) if args.waypoints else args.seconds
+    print(f"離陸地点 x{ground[0]:+.3f} y{ground[1]:+.3f} z{ground[2]:+.3f} m"
+          f"  通る点 {len(targets)}個  所要 {total:.0f}秒")
 
     # --- Tello ---
     tello = Tello()
@@ -247,7 +277,8 @@ def main():
     if args.log:
         log_file = open(pathlib.Path(args.log).expanduser(), "w", newline="")
         writer = csv.writer(log_file)
-        writer.writerow(["t_s", "phase", "x_m", "y_m", "z_m", "head_deg", "age_ms",
+        writer.writerow(["t_s", "phase", "wp", "tgt_x_m", "tgt_y_m",
+                         "x_m", "y_m", "z_m", "head_deg", "age_ms",
                          "err_x_m", "err_y_m", "cmd_right", "cmd_fwd", "tof_cm", "bat", "cam_fps"])
 
     t_start = time.time()
@@ -305,16 +336,29 @@ def main():
         time.sleep(0.5)
 
         # 3. 位置制御
-        print(f"位置制御を {args.seconds:.0f} 秒行います。目標 x{target[0]:+.3f} y{target[1]:+.3f}")
+        wp_time = args.dwell if args.waypoints else args.seconds
+        print(f"位置制御を {wp_time * len(targets):.0f} 秒行います"
+              f"（{len(targets)}個の点を各 {wp_time:.0f} 秒）")
         t0 = time.time()
         last_ok = time.time()
         next_print = 0.0
         integral = np.zeros(2)      # ずれの積み上げ（世界座標, m*s）
         t_prev = time.time()
-        while time.time() - t0 < args.seconds:
+        wp = -1
+        target = targets[0]
+        while time.time() - t0 < wp_time * len(targets):
             now = time.time()
             dt = now - t_prev
             t_prev = now
+            # 目標の切り替え。積分はそのまま引き継ぐ（外乱を打ち消す分は次の点でも要る）
+            i_wp = min(int((now - t0) / wp_time), len(targets) - 1)
+            if i_wp != wp:
+                wp = i_wp
+                target = targets[wp]
+                if len(targets) > 1:
+                    d = offsets[wp]
+                    print(f"\n  {wp + 1}/{len(targets)} 点目へ "
+                          f"（離陸地点から x{d[0] * 100:+.0f} y{d[1] * 100:+.0f}cm）")
             s = tracker.sample
             age = now - s[0] if s is not None else 99.0
             cam_down = tracker.down or now - tracker.last_frame > 1.0   # 映像そのものが止まっている
@@ -353,7 +397,9 @@ def main():
             if writer:
                 st = tello.get_current_state()
                 p = s[1] if s is not None else [np.nan] * 3
-                writer.writerow([f"{now - t_start:.2f}", "ctrl", *(f"{v:.4f}" for v in p),
+                writer.writerow([f"{now - t_start:.2f}", "ctrl", wp + 1,
+                                 f"{target[0]:.4f}", f"{target[1]:.4f}",
+                                 *(f"{v:.4f}" for v in p),
                                  f"{s[2]:.1f}" if s is not None else "", f"{age * 1000:.0f}",
                                  f"{err[0]:.4f}", f"{err[1]:.4f}", cmd_r, cmd_f,
                                  st.get("tof", 0), st.get("bat", 0), f"{tracker.fps:.0f}"])
