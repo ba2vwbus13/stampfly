@@ -169,6 +169,43 @@ def center_on_plane(tracker, z):
     return cam + (z - cam[2]) / ray[2] * ray
 
 
+def probe_direction(tello, tracker, rc_fwd, dist_m, timeout):
+    """rc_fwd の向きへ押して、実際に動いた向き（世界座標 deg）とマーカーの向きを返す
+
+    8cm の移動では機体自身のふらつき（数cm）が方向の誤差になり、数十度ずれる。
+    20cm 押しながら経路の点をすべて集め、直線をあてはめて向きを出す。
+    """
+    p0, _ = average_position(tracker, 0.7)
+    if p0 is None:
+        raise RuntimeError("浮いた状態でマーカーが見えません（カメラの画面外に出ていないか確認）")
+    pts, heads, last = [], [], None
+    t_push = time.time()
+    while time.time() - t_push < timeout:
+        tello.send_rc_control(0, rc_fwd, 0, 0)
+        s = tracker.sample
+        if s is not None and time.time() - s[0] < 0.2 and s is not last:
+            last = s
+            pts.append(s[1][:2])
+            heads.append(s[2])
+            if np.linalg.norm(s[1][:2] - p0[:2]) >= dist_m:
+                break
+        time.sleep(0.05)
+    tello.send_rc_control(0, 0, 0, 0)
+    if len(pts) < 5:
+        raise RuntimeError("押している間にマーカーを見失いました")
+    pts = np.array(pts)
+    net = pts[-1] - p0[:2]
+    dist = float(np.linalg.norm(net))
+    # 経路の点に直線をあてはめる（主成分）。向きは実際に進んだ側に合わせる
+    v = np.linalg.svd(pts - pts.mean(axis=0))[2][0]
+    if v @ net < 0:
+        v = -v
+    deg = float(np.degrees(np.arctan2(v[1], v[0])))
+    h = np.radians(heads)
+    head = float(np.degrees(np.arctan2(np.sin(h).mean(), np.cos(h).mean())))
+    return deg, head, dist
+
+
 def to_body(vx, vy, fwd_deg):
     """世界座標の速度 → Tello の (右, 前)
 
@@ -204,6 +241,10 @@ def main():
                     help="カメラが落ちて開き直している間、これ以上続いたら着陸 [s]")
     ap.add_argument("--lost-land", type=float, default=3.0, help="これ以上見失ったら着陸 [s]")
     ap.add_argument("--probe-cmd", type=int, default=20, help="向きを測るときの前進指令（rc）")
+    ap.add_argument("--probe-dist", type=float, default=0.20,
+                    help="向きを測るために動かす距離 [m]。短いとふらつきで向きがずれる")
+    ap.add_argument("--probe-agree", type=float, default=20.0,
+                    help="前後2回の測定に許す食い違い [deg]。超えたら飛ばさない")
     ap.add_argument("--marker-id", type=int, default=1)
     ap.add_argument("--marker-cm", type=float, default=4.0)
     ap.add_argument("--exposure", type=float, default=6.0, help="手動露出 [ms]")
@@ -252,11 +293,21 @@ def main():
         ng = not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7)
         print(f"  {i + 1}. ずれ x{d[0] * 100:+5.0f} y{d[1] * 100:+5.0f}cm → "
               f"横 {u * 100:3.0f}%  縦 {v * 100:3.0f}%" + ("   ← 画面の外へ出ます" if ng else ""))
-    bad = [i for i, tg in enumerate(targets)
+    # 向きの測定で前後に --probe-dist 動くぶんも、画面に入るか確かめる
+    d = args.probe_dist
+    probe_pts = [ground[:2] + np.array(v) for v in ((d, 0), (-d, 0), (0, d), (0, -d))]
+    for tg in probe_pts:
+        u, v = image_ratio(tracker, [tg[0], tg[1], z_hover])
+        if not (0.3 <= u <= 0.7 and 0.3 <= v <= 0.7):
+            print(f"  向きの測定（離陸地点から {d * 100:.0f}cm）→ 横 {u * 100:3.0f}%  "
+                  f"縦 {v * 100:3.0f}%   ← 画面の外へ出ます")
+
+    bad = [i for i, tg in enumerate(list(targets) + probe_pts)
            if not all(0.3 <= r <= 0.7 for r in image_ratio(tracker, [tg[0], tg[1], z_hover]))]
     if bad:
         c = center_on_plane(tracker, z_hover)
-        sys.exit(f"{len(bad)}個の点が画面の外です。Tello を動かすか、経路を小さくしてください:\n"
+        sys.exit(f"{len(bad)}個の点が画面の外です。Tello を動かすか、経路を小さく"
+                 f"（あるいは --probe-dist を小さく）してください:\n"
                  f"  離陸地点を x 方向に {(c[0] - ground[0]) * 100:+.0f}cm、"
                  f"y 方向に {(c[1] - ground[1]) * 100:+.0f}cm 動かすと中央になります"
                  f"（基準マーカーの矢印の向きが +）")
@@ -304,35 +355,29 @@ def main():
         tello.send_rc_control(0, 0, 0, 0)
         time.sleep(1.0)
 
-        # 2. 前方向を実測する
-        #    move_forward(20) だと画面の外へ出ることがあったので、カメラで見ながら
-        #    ゆっくり前へ押し、8cm 動いた時点で止める（戻りは位置制御に任せる）
-        print("少し前に動かして、機体の向きを測ります")
-        p0, _ = average_position(tracker, 1.0)
-        if p0 is None:
-            raise RuntimeError("浮いた状態でマーカーが見えません（カメラの画面外に出ていないか確認）")
-        last = None
-        t_push = time.time()
-        while time.time() - t_push < 2.0:
-            tello.send_rc_control(0, args.probe_cmd, 0, 0)
-            s = tracker.sample
-            if s is not None and time.time() - s[0] < 0.2:
-                last = s
-                if np.linalg.norm(s[1][:2] - p0[:2]) >= 0.08:
-                    break
-            time.sleep(0.05)
-        tello.send_rc_control(0, 0, 0, 0)
-        if last is None:
-            raise RuntimeError("前に動かしている間にマーカーを見失いました")
-        d = last[1][:2] - p0[:2]
-        dist = float(np.linalg.norm(d))
-        fwd_world = float(np.degrees(np.arctan2(d[1], d[0])))
-        offset = wrap_deg(fwd_world - last[2])   # マーカーの向き → 機体の前方向
-        print(f"  移動 {dist * 100:.1f}cm  前方向 {fwd_world:+.1f}度  "
-              f"マーカーとの差 {offset:+.1f}度")
-        if dist < 0.04:
-            raise RuntimeError(f"移動量 {dist * 100:.1f}cm が小さすぎて向きを決められません"
-                               f"（--probe-cmd を大きくする）")
+        # 2. 前方向を実測する（前と後ろの2回。食い違ったら飛ばさない）
+        #    「マーカーとの差」は貼り方で決まる固定値なので、2回の測定は一致するはず。
+        #    1回だけだと、ふらつきで数十度ずれても気づけず、機体が目標のまわりを
+        #    回り続ける（実測: 半径20cm・周期7秒の円を描いて画面外へ出た）
+        print("前後に動かして、機体の向きを測ります")
+        fwd_a, head_a, dist_a = probe_direction(tello, tracker, args.probe_cmd,
+                                                args.probe_dist, 3.0)
+        off_a = wrap_deg(fwd_a - head_a)
+        time.sleep(0.5)
+        back, head_b, dist_b = probe_direction(tello, tracker, -args.probe_cmd,
+                                               args.probe_dist, 3.0)
+        off_b = wrap_deg(back + 180.0 - head_b)
+        print(f"  前へ {dist_a * 100:.1f}cm → マーカーとの差 {off_a:+.1f}度")
+        print(f"  後へ {dist_b * 100:.1f}cm → マーカーとの差 {off_b:+.1f}度")
+        gap = abs(wrap_deg(off_a - off_b))
+        if gap > args.probe_agree:
+            raise RuntimeError(
+                f"2回の測定が {gap:.0f}度 食い違っています（許容 {args.probe_agree:.0f}度）。"
+                f"向きを間違えたまま飛ばすと目標のまわりを回り続けるので中止します。\n"
+                f"  マーカーが傾いて読めていないか、押している間に流されていないか確認してください")
+        o = np.radians([off_a, off_b])
+        offset = float(np.degrees(np.arctan2(np.sin(o).mean(), np.cos(o).mean())))
+        print(f"  採用: マーカーとの差 {offset:+.1f}度（食い違い {gap:.0f}度）")
         time.sleep(0.5)
 
         # 3. 位置制御
