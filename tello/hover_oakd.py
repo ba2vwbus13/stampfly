@@ -272,8 +272,9 @@ def main():
                     help="目標を次の点へ動かす速さ [m/s]。一瞬で飛ばすと行き過ぎる")
     ap.add_argument("--i-band", type=float, default=0.10,
                     help="積分を効かせるずれの範囲 [m]。移動中に溜め込まないため")
-    ap.add_argument("--max-i", type=float, default=10.0,
-                    help="積分が出せる指令の上限（rc）。溜まりすぎての行き過ぎを防ぐ")
+    ap.add_argument("--max-i", type=float, default=18.0,
+                    help="積分が出せる指令の上限（rc）。溜まりすぎての行き過ぎを防ぐ。"
+                         "10 では外乱の強い日に押し負けて、到達後 毎秒1cm 離れていった")
     ap.add_argument("--max-cmd", type=int, default=25, help="水平指令の上限（rc、最大100）")
     ap.add_argument("--deadband", type=float, default=0.02, help="これ以内のずれは直さない [m]")
     ap.add_argument("--fence", type=float, default=0.5, help="目標からこれ以上離れたら着陸 [m]")
@@ -369,7 +370,7 @@ def main():
         log_file = open(pathlib.Path(args.log).expanduser(), "w", newline="")
         writer = csv.writer(log_file)
         writer.writerow(["t_s", "phase", "wp", "tgt_x_m", "tgt_y_m",
-                         "x_m", "y_m", "z_m", "head_deg", "age_ms",
+                         "x_m", "y_m", "z_m", "head_deg", "age_ms", "i_cmd",
                          "err_x_m", "err_y_m", "cmd_right", "cmd_fwd", "tof_cm", "bat", "cam_fps"])
 
     t_start = time.time()
@@ -454,6 +455,7 @@ def main():
             age = now - s[0] if s is not None else 99.0
             cam_down = tracker.down or now - tracker.last_frame > 1.0   # 映像そのものが止まっている
             cmd_r = cmd_f = 0
+            i_size = 0.0
             err = np.array([np.nan, np.nan])
             if age < 0.3:
                 last_ok = now
@@ -480,6 +482,7 @@ def main():
                         integral = i_cmd / (args.ki * 100)  # 上限で頭打ちにして溜め込みを防ぐ
                     else:
                         i_cmd = np.zeros(2)
+                    i_size = float(np.linalg.norm(i_cmd))
                     # 速度の分を引く（ブレーキ）。これが無いと目標を通り過ぎて振動が続く
                     v = err * args.kp * 100 + i_cmd - vel * args.kd
                     right, fwd = to_body(v[0], v[1], head + offset)
@@ -502,6 +505,7 @@ def main():
                                  f"{target[0]:.4f}", f"{target[1]:.4f}",
                                  *(f"{v:.4f}" for v in p),
                                  f"{s[2]:.1f}" if s is not None else "", f"{age * 1000:.0f}",
+                                 f"{i_size:.1f}",
                                  f"{err[0]:.4f}", f"{err[1]:.4f}", cmd_r, cmd_f,
                                  st.get("tof", 0), st.get("bat", 0), f"{tracker.fps:.0f}"])
             if now - t0 > next_print:
