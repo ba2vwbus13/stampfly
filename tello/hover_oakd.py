@@ -181,10 +181,23 @@ def probe_direction(tello, tracker, rc_fwd, dist_m, timeout, settle=2.0):
     - 押す前に settle 秒、指令0 で止まるのを待つ
     - 始点から 3cm 離れるまでの点は使わない
     """
+    # 止まるのを待ちながら、機体が勝手に流される速さを測る。
+    # 15cm 進む間に横へ3cm 流されるだけで向きが11度ずれるので、これを差し引く
     t_settle = time.time()
+    drift_pts, last = [], None
     while time.time() - t_settle < settle:
         tello.send_rc_control(0, 0, 0, 0)     # 止まるのを待つ（無指令だと15秒で着陸する）
+        s = tracker.sample
+        if s is not None and time.time() - s[0] < 0.2 and s is not last:
+            last = s
+            drift_pts.append((time.time(), s[1][:2].copy()))
         time.sleep(0.05)
+    drift = np.zeros(2)
+    if len(drift_pts) >= 8 and drift_pts[-1][0] - drift_pts[0][0] > 0.8:
+        tt = np.array([q[0] for q in drift_pts]); tt -= tt.mean()
+        pp = np.array([q[1] for q in drift_pts])
+        drift = (tt @ (pp - pp.mean(axis=0))) / (tt @ tt)      # 最小二乗の傾き [m/s]
+
     p0, _ = average_position(tracker, 0.7)
     if p0 is None:
         raise RuntimeError("浮いた状態でマーカーが見えません（カメラの画面外に出ていないか確認）")
@@ -196,10 +209,11 @@ def probe_direction(tello, tracker, rc_fwd, dist_m, timeout, settle=2.0):
         s = tracker.sample
         if s is not None and time.time() - s[0] < 0.2 and s is not last:
             last = s
-            d = float(np.linalg.norm(s[1][:2] - p0[:2]))
+            q = s[1][:2] - drift * (time.time() - t_push)     # 流される分を取り除く
+            d = float(np.linalg.norm(q - p0[:2]))
             far = max(far, d)
             if d >= 0.03:                     # 勢いが残っている区間は使わない
-                pts.append(s[1][:2])
+                pts.append(q)
                 heads.append(s[2])
             if d >= dist_m:
                 break
@@ -222,7 +236,7 @@ def probe_direction(tello, tracker, rc_fwd, dist_m, timeout, settle=2.0):
     deg = float(np.degrees(np.arctan2(v[1], v[0])))
     h = np.radians(heads)
     head = float(np.degrees(np.arctan2(np.sin(h).mean(), np.cos(h).mean())))
-    return deg, head, dist
+    return deg, head, dist, float(np.linalg.norm(drift)) * 100
 
 
 def to_body(vx, vy, fwd_deg):
@@ -386,14 +400,14 @@ def main():
         #    1回だけだと、ふらつきで数十度ずれても気づけず、機体が目標のまわりを
         #    回り続ける（実測: 半径20cm・周期7秒の円を描いて画面外へ出た）
         print("前後に動かして、機体の向きを測ります")
-        fwd_a, head_a, dist_a = probe_direction(tello, tracker, args.probe_cmd,
-                                                args.probe_dist, 4.0, settle=1.0)
+        fwd_a, head_a, dist_a, dr_a = probe_direction(tello, tracker, args.probe_cmd,
+                                                      args.probe_dist, 4.0, settle=2.0)
         off_a = wrap_deg(fwd_a - head_a)
-        back, head_b, dist_b = probe_direction(tello, tracker, -args.probe_cmd,
-                                               args.probe_dist, 4.0, settle=2.0)
+        back, head_b, dist_b, dr_b = probe_direction(tello, tracker, -args.probe_cmd,
+                                                     args.probe_dist, 4.0, settle=2.0)
         off_b = wrap_deg(back + 180.0 - head_b)
-        print(f"  前へ {dist_a * 100:.1f}cm → マーカーとの差 {off_a:+.1f}度")
-        print(f"  後へ {dist_b * 100:.1f}cm → マーカーとの差 {off_b:+.1f}度")
+        print(f"  前へ {dist_a * 100:.1f}cm → マーカーとの差 {off_a:+.1f}度（流れ {dr_a:.1f}cm/s）")
+        print(f"  後へ {dist_b * 100:.1f}cm → マーカーとの差 {off_b:+.1f}度（流れ {dr_b:.1f}cm/s）")
         gap = abs(wrap_deg(off_a - off_b))
         if gap > args.probe_agree:
             raise RuntimeError(
