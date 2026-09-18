@@ -183,6 +183,11 @@ def main():
     ap.add_argument("--height", type=int, default=40, help="ホバリング高さ（下向きToF）[cm]")
     ap.add_argument("--kp", type=float, default=1.0,
                     help="ずれに対する速度指令のゲイン。1.0 なら 10cm ずれで指令10（≒10cm/s）")
+    ap.add_argument("--ki", type=float, default=0.35,
+                    help="積分ゲイン。同じ向きのずれが残り続けたときに指令を足していく。"
+                         "0 で比例のみ（定常偏差が -7cm 残った）")
+    ap.add_argument("--max-i", type=float, default=10.0,
+                    help="積分が出せる指令の上限（rc）。溜まりすぎての行き過ぎを防ぐ")
     ap.add_argument("--max-cmd", type=int, default=25, help="水平指令の上限（rc、最大100）")
     ap.add_argument("--deadband", type=float, default=0.02, help="これ以内のずれは直さない [m]")
     ap.add_argument("--fence", type=float, default=0.5, help="目標からこれ以上離れたら着陸 [m]")
@@ -304,8 +309,12 @@ def main():
         t0 = time.time()
         last_ok = time.time()
         next_print = 0.0
+        integral = np.zeros(2)      # ずれの積み上げ（世界座標, m*s）
+        t_prev = time.time()
         while time.time() - t0 < args.seconds:
             now = time.time()
+            dt = now - t_prev
+            t_prev = now
             s = tracker.sample
             age = now - s[0] if s is not None else 99.0
             cam_down = tracker.down or now - tracker.last_frame > 1.0   # 映像そのものが止まっている
@@ -320,7 +329,15 @@ def main():
                     reason = f"目標から {dist_err * 100:.0f}cm 離れた"
                     break
                 if dist_err > args.deadband:
-                    v = err * args.kp * 100          # rc 値（≒cm/s）
+                    # 比例だけだと、機体を押し続ける外乱と釣り合う分のずれが残る
+                    # （実測で x に -7cm）。同じ向きのずれを積み上げて、その分を足す
+                    if args.ki > 0:
+                        integral += err * dt
+                        i_cmd = np.clip(integral * args.ki * 100, -args.max_i, args.max_i)
+                        integral = i_cmd / (args.ki * 100)  # 上限で頭打ちにして溜め込みを防ぐ
+                    else:
+                        i_cmd = np.zeros(2)
+                    v = err * args.kp * 100 + i_cmd         # rc 値（≒cm/s）
                     right, fwd = to_body(v[0], v[1], head + offset)
                     cmd_r = int(np.clip(right, -args.max_cmd, args.max_cmd))
                     cmd_f = int(np.clip(fwd, -args.max_cmd, args.max_cmd))
@@ -329,6 +346,8 @@ def main():
                 reason = (f"カメラが復帰しない（{now - last_ok:.1f} 秒）" if cam_down
                           else f"マーカーを {now - last_ok:.1f} 秒見失った")
                 break
+            if age >= 0.3:
+                integral[:] = 0      # 見失っている間に溜めると、復帰した瞬間に暴れる
             tello.send_rc_control(cmd_r, cmd_f, 0, 0)
 
             if writer:
